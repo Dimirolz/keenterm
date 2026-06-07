@@ -41,6 +41,9 @@
       .dot.off { background: #6e7681; }
       .name { font-weight: 600; color: #eee; }
       .codex { margin-left: auto; font-size: 11px; color: #3fb950; }
+      .codex.idle { color: #6e7681; }
+      .codex.work { color: #e3b341; animation: pulse 1s ease-in-out infinite; }
+      @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: .45; } }
       .acts { display: flex; gap: 6px; }
       .acts button {
         background: #2d2d2d; color: #ccc; border: 1px solid #3a3a3a;
@@ -102,6 +105,7 @@
       let agents = [];
       let selected = null;
       const terminals = new Map(); // n -> { term, fit, ws, el, metrics }
+      const liveWorking = new Map(); // n -> bool (instant codex work/idle status from ws)
 
       const dev = {
         totalBytes: 0,
@@ -138,10 +142,14 @@
 
           const top = document.createElement("div");
           top.className = "top";
+          const working = liveWorking.has(a.n) ? liveWorking.get(a.n) : a.working;
+          const badge = a.codex
+            ? (working ? `<span class="codex work">● working</span>` : `<span class="codex idle">idle</span>`)
+            : "";
           top.innerHTML =
             `<span class="dot ${a.state === "running" ? "run" : "off"}"></span>` +
             `<span class="name">agent ${a.n}</span>` +
-            (a.codex ? `<span class="codex">codex</span>` : "");
+            badge;
           row.appendChild(top);
 
           const acts = document.createElement("div");
@@ -214,8 +222,16 @@
         const ws = new WebSocket(`${proto}://${location.host}/term?machine=shilo-agent-${n}`);
         ws.binaryType = "arraybuffer";
         ws.onmessage = (ev) => {
-          const data = typeof ev.data === "string" ? ev.data : new Uint8Array(ev.data);
-          const bytes = typeof data === "string" ? new TextEncoder().encode(data).length : data.byteLength;
+          // text frames are control/status JSON; binary frames are terminal output
+          if (typeof ev.data === "string") {
+            try {
+              const m = JSON.parse(ev.data);
+              if (m.type === "status") onStatus(n, m.working);
+            } catch {}
+            return;
+          }
+          const data = new Uint8Array(ev.data);
+          const bytes = data.byteLength;
           const started = performance.now();
           dev.totalBytes += bytes;
           dev.windowBytes += bytes;
@@ -244,6 +260,11 @@
         }
       }
 
+      function onStatus(n, working) {
+        liveWorking.set(n, working);
+        renderSidebar();
+      }
+
       function closeTerminal(n) {
         const e = terminals.get(n);
         if (!e) return;
@@ -251,6 +272,7 @@
         try { e.term.dispose(); } catch {}
         e.el.remove();
         terminals.delete(n);
+        liveWorking.delete(n);
       }
 
       // ---- selection ----

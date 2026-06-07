@@ -33,7 +33,35 @@ function run(file, args) {
 }
 
 // ---- persistent Codex sessions ---------------------------------------------
-const sessions = new Map(); // machine -> { term, buffer, clients:Set }
+const sessions = new Map(); // machine -> { term, buffer, clients, carry, working, title }
+
+// Codex signals "working" by prefixing the terminal title (OSC 0/1/2) with a
+// braille spinner glyph (U+2800–U+28FF). No spinner -> idle / done.
+const OSC_TITLE = /\x1b\][012];([^\x07\x1b]*)(?:\x07|\x1b\\)/g;
+
+function detectStatus(s, data) {
+  s.carry += data;
+  const matches = [...s.carry.matchAll(OSC_TITLE)];
+  if (matches.length) {
+    const last = matches[matches.length - 1];
+    const title = last[1];
+    const first = [...title.trimStart()][0];
+    const cp = first ? first.codePointAt(0) : 0;
+    const working = cp >= 0x2800 && cp <= 0x28ff;
+    s.carry = s.carry.slice(last.index + last[0].length);
+    s.title = title;
+    if (working !== s.working) {
+      s.working = working; // only broadcast on the work/idle transition, not per spinner frame
+      broadcastStatus(s);
+    }
+  }
+  if (s.carry.length > 512) s.carry = s.carry.slice(-512); // bound for split seqs
+}
+
+function broadcastStatus(s) {
+  const msg = JSON.stringify({ type: "status", working: s.working, title: s.title });
+  for (const ws of s.clients) if (ws.readyState === ws.OPEN) ws.send(msg);
+}
 
 function getSession(machine) {
   let s = sessions.get(machine);
@@ -47,12 +75,15 @@ function getSession(machine) {
     env: { ...process.env, TERM: "xterm-256color" },
   });
 
-  s = { term, buffer: "", clients: new Set() };
+  s = { term, buffer: "", clients: new Set(), carry: "", working: false, title: "" };
 
   term.onData((data) => {
     s.buffer += data;
     if (s.buffer.length > BUFFER_CAP) s.buffer = s.buffer.slice(-BUFFER_CAP);
-    for (const ws of s.clients) if (ws.readyState === ws.OPEN) ws.send(data);
+    detectStatus(s, data);
+    // terminal output as binary; control/status frames are sent as text JSON
+    const bin = Buffer.from(data, "utf8");
+    for (const ws of s.clients) if (ws.readyState === ws.OPEN) ws.send(bin);
   });
 
   term.onExit(({ exitCode }) => {
@@ -92,7 +123,9 @@ app.get("/api/agents", async (_req, res) => {
   const agents = list
     .map((x) => {
       const m = /^shilo-agent-(\d+)$/.exec(x.name);
-      return m ? { n: Number(m[1]), name: x.name, state: x.state, codex: sessions.has(x.name) } : null;
+      if (!m) return null;
+      const s = sessions.get(x.name);
+      return { n: Number(m[1]), name: x.name, state: x.state, codex: !!s, working: s ? s.working : false };
     })
     .filter(Boolean)
     .sort((a, b) => a.n - b.n);
@@ -169,7 +202,10 @@ wss.on("connection", (ws, req) => {
   s.clients.add(ws);
   console.log(`[ws] ${machine} connected (${s.clients.size} client(s))`);
 
-  if (s.buffer && ws.readyState === ws.OPEN) ws.send(s.buffer);
+  if (s.buffer && ws.readyState === ws.OPEN) ws.send(Buffer.from(s.buffer, "utf8"));
+  if (ws.readyState === ws.OPEN) {
+    ws.send(JSON.stringify({ type: "status", working: s.working, title: s.title }));
+  }
 
   ws.on("message", (raw) => {
     let msg;
