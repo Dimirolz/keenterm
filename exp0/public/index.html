@@ -1,0 +1,264 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>orb — codex agent manager</title>
+    <link
+      rel="stylesheet"
+      href="https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/css/xterm.min.css"
+    />
+    <style>
+      :root { color-scheme: dark; }
+      * { box-sizing: border-box; }
+      html, body {
+        margin: 0; height: 100%;
+        background: #1e1e1e; color: #ddd;
+        font: 13px ui-monospace, SFMono-Regular, Menlo, monospace;
+      }
+      #app { display: grid; grid-template-columns: 240px 1fr; height: 100%; }
+
+      /* sidebar */
+      #side { background: #181818; border-right: 1px solid #2d2d2d; display: flex; flex-direction: column; }
+      #side header {
+        display: flex; align-items: center; justify-content: space-between;
+        padding: 10px 12px; border-bottom: 1px solid #2d2d2d;
+      }
+      #side header span { font-weight: 600; color: #fff; }
+      #new { background: #0e639c; color: #fff; border: 0; border-radius: 4px; padding: 4px 9px; cursor: pointer; }
+      #new:hover { background: #1177bb; }
+      #new:disabled { opacity: .5; cursor: default; }
+      #list { overflow: auto; flex: 1; }
+      .row {
+        padding: 8px 12px; cursor: pointer; border-bottom: 1px solid #232323;
+        display: flex; flex-direction: column; gap: 5px;
+      }
+      .row:hover { background: #202020; }
+      .row.sel { background: #2a2d2e; }
+      .row .top { display: flex; align-items: center; gap: 7px; }
+      .dot { width: 8px; height: 8px; border-radius: 50%; flex: none; }
+      .dot.run { background: #3fb950; }
+      .dot.off { background: #6e7681; }
+      .name { font-weight: 600; color: #eee; }
+      .codex { margin-left: auto; font-size: 11px; color: #3fb950; }
+      .acts { display: flex; gap: 6px; }
+      .acts button {
+        background: #2d2d2d; color: #ccc; border: 1px solid #3a3a3a;
+        border-radius: 3px; padding: 2px 7px; cursor: pointer; font-size: 11px;
+      }
+      .acts button:hover { background: #383838; }
+      .acts button.danger:hover { background: #5a1d1d; border-color: #7a2a2a; color: #fff; }
+
+      /* main */
+      #main { position: relative; min-width: 0; }
+      #terms { position: absolute; inset: 0; }
+      .termwrap { position: absolute; inset: 0; padding: 4px; }
+      #empty, #notice {
+        position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
+        flex-direction: column; gap: 14px; color: #888; text-align: center; padding: 20px;
+      }
+      #notice button {
+        background: #0e639c; color: #fff; border: 0; border-radius: 4px; padding: 6px 14px; cursor: pointer;
+      }
+      .hidden { display: none !important; }
+    </style>
+  </head>
+  <body>
+    <div id="app">
+      <aside id="side">
+        <header><span>agents</span><button id="new">+ new</button></header>
+        <div id="list"></div>
+      </aside>
+      <main id="main">
+        <div id="terms"></div>
+        <div id="empty">select an agent</div>
+        <div id="notice" class="hidden"></div>
+      </main>
+    </div>
+
+    <script src="https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/lib/xterm.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@xterm/addon-fit@0.10.0/lib/addon-fit.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@xterm/addon-webgl@0.18.0/lib/addon-webgl.min.js"></script>
+    <script>
+      const listEl = document.getElementById("list");
+      const termsEl = document.getElementById("terms");
+      const emptyEl = document.getElementById("empty");
+      const noticeEl = document.getElementById("notice");
+      const newBtn = document.getElementById("new");
+
+      let agents = [];
+      let selected = null;
+      const terminals = new Map(); // n -> { term, fit, ws, el }
+
+      // ---- REST ----
+      const api = {
+        list: () => fetch("/api/agents").then((r) => r.json()),
+        new: () => fetch("/api/agents", { method: "POST" }).then(j),
+        start: (n) => fetch(`/api/agents/${n}/start`, { method: "POST" }).then(j),
+        stop: (n) => fetch(`/api/agents/${n}/stop`, { method: "POST" }).then(j),
+        del: (n) => fetch(`/api/agents/${n}`, { method: "DELETE" }).then(j),
+      };
+      async function j(r) {
+        const data = await r.json().catch(() => ({}));
+        if (!r.ok) throw new Error(data.error || r.statusText);
+        return data;
+      }
+
+      // ---- sidebar ----
+      function renderSidebar() {
+        listEl.innerHTML = "";
+        for (const a of agents) {
+          const row = document.createElement("div");
+          row.className = "row" + (a.n === selected ? " sel" : "");
+          row.onclick = () => selectAgent(a.n);
+
+          const top = document.createElement("div");
+          top.className = "top";
+          top.innerHTML =
+            `<span class="dot ${a.state === "running" ? "run" : "off"}"></span>` +
+            `<span class="name">agent ${a.n}</span>` +
+            (a.codex ? `<span class="codex">codex</span>` : "");
+          row.appendChild(top);
+
+          const acts = document.createElement("div");
+          acts.className = "acts";
+          acts.onclick = (e) => e.stopPropagation();
+          if (a.state === "running") acts.appendChild(btn("stop", () => act(api.stop(a.n))));
+          else acts.appendChild(btn("start", () => act(api.start(a.n))));
+          const del = btn("delete", () => {
+            if (confirm(`delete agent ${a.n} (VM ${a.name})?`)) act(api.del(a.n), a.n);
+          });
+          del.className = "danger";
+          acts.appendChild(del);
+          row.appendChild(acts);
+
+          listEl.appendChild(row);
+        }
+      }
+      function btn(label, fn) {
+        const b = document.createElement("button");
+        b.textContent = label;
+        b.onclick = fn;
+        return b;
+      }
+
+      async function act(promise, removedN) {
+        try {
+          await promise;
+        } catch (e) {
+          alert(e.message);
+        }
+        if (removedN != null) closeTerminal(removedN);
+        await refresh();
+      }
+
+      async function refresh() {
+        try {
+          agents = await api.list();
+        } catch (e) {
+          console.warn(e);
+          return;
+        }
+        renderSidebar();
+        // if selected agent stopped/disappeared, reflect it
+        if (selected != null) selectAgent(selected, true);
+      }
+
+      // ---- terminal per agent ----
+      function ensureTerminal(n) {
+        let e = terminals.get(n);
+        if (e) return e;
+
+        const el = document.createElement("div");
+        el.className = "termwrap hidden";
+        termsEl.appendChild(el);
+
+        const term = new Terminal({
+          cursorBlink: true,
+          fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace",
+          fontSize: 13,
+          theme: { background: "#1e1e1e" },
+          allowProposedApi: true,
+          scrollback: 50000,
+        });
+        const fit = new FitAddon.FitAddon();
+        term.loadAddon(fit);
+        term.open(el);
+        try { term.loadAddon(new WebglAddon.WebglAddon()); } catch {}
+
+        const proto = location.protocol === "https:" ? "wss" : "ws";
+        const ws = new WebSocket(`${proto}://${location.host}/term?machine=shilo-agent-${n}`);
+        ws.binaryType = "arraybuffer";
+        ws.onmessage = (ev) => term.write(typeof ev.data === "string" ? ev.data : new Uint8Array(ev.data));
+        ws.onopen = () => sendResize(e);
+        term.onData((d) => { if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: "input", data: d })); });
+
+        e = { term, fit, ws, el };
+        terminals.set(n, e);
+        return e;
+      }
+
+      function sendResize(e) {
+        if (!e) return;
+        e.fit.fit();
+        if (e.ws.readyState === WebSocket.OPEN) {
+          e.ws.send(JSON.stringify({ type: "resize", cols: e.term.cols, rows: e.term.rows }));
+        }
+      }
+
+      function closeTerminal(n) {
+        const e = terminals.get(n);
+        if (!e) return;
+        try { e.ws.close(); } catch {}
+        try { e.term.dispose(); } catch {}
+        e.el.remove();
+        terminals.delete(n);
+      }
+
+      // ---- selection ----
+      function selectAgent(n, keep) {
+        selected = n;
+        renderSidebar();
+        const a = agents.find((x) => x.n === n);
+        for (const [, e] of terminals) e.el.classList.add("hidden");
+        emptyEl.classList.add("hidden");
+        noticeEl.classList.add("hidden");
+
+        if (!a) { selected = null; emptyEl.classList.remove("hidden"); return; }
+        if (a.state !== "running") {
+          closeTerminal(n); // VM not running -> no live codex
+          showNotice(a);
+          return;
+        }
+        const e = ensureTerminal(n);
+        e.el.classList.remove("hidden");
+        sendResize(e);
+        if (!keep) e.term.focus();
+      }
+
+      function showNotice(a) {
+        noticeEl.innerHTML = `<div>agent ${a.n} (${a.name}) is <b>${a.state}</b></div>`;
+        const b = document.createElement("button");
+        b.textContent = "start VM";
+        b.onclick = () => act(api.start(a.n));
+        noticeEl.appendChild(b);
+        noticeEl.classList.remove("hidden");
+      }
+
+      // ---- wiring ----
+      newBtn.onclick = async () => {
+        newBtn.disabled = true;
+        newBtn.textContent = "…";
+        try { await api.new(); } catch (e) { alert(e.message); }
+        newBtn.disabled = false;
+        newBtn.textContent = "+ new";
+        await refresh();
+      };
+
+      window.addEventListener("resize", () => { if (selected != null) sendResize(terminals.get(selected)); });
+
+      refresh();
+      setInterval(refresh, 4000); // keep VM states fresh
+    </script>
+  </body>
+</html>

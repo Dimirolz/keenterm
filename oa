@@ -1,0 +1,211 @@
+#!/usr/bin/env bash
+# oa — minimal CLI for OrbStack Codex agents.
+# Agents are addressed by number: `oa codex 1` == machine `shilo-agent-1`.
+set -euo pipefail
+
+# ---- config ------------------------------------------------------------------
+PREFIX="shilo-agent-"
+BASE="shilo-agent-base"
+REPO_SLUG="ShiloAI/shilo-ai-mono"
+REPO_DIR='~/projects/shilo-ai-mono'   # path inside the VM (~ expands in VM)
+NODE_VERSION="22.22.0"
+ASDF_VERSION="v0.15.0"
+PNPM_VERSION="10.16.0"
+
+# ---- helpers -----------------------------------------------------------------
+die() { echo "oa: $*" >&2; exit 1; }
+
+# machine name from a number argument
+m() {
+  [ $# -ge 1 ] || die "missing agent number (e.g. 'oa $CMD 1')"
+  case "$1" in
+    ''|*[!0-9]*) die "agent must be a number, got '$1'" ;;
+  esac
+  echo "${PREFIX}$1"
+}
+
+exists() { orbctl info "$1" >/dev/null 2>&1; }
+
+# run a command inside the VM repo with asdf on PATH
+vrun() {
+  local machine="$1"; shift
+  orb -m "$machine" bash -lc ". ~/.asdf/asdf.sh && cd $REPO_DIR && $*"
+}
+
+# next free agent number (1,2,3,...)
+next_num() {
+  local used n=1
+  used=$(orbctl list -q 2>/dev/null | sed -n "s/^${PREFIX}\([0-9]\{1,\}\)\$/\1/p" || true)
+  while echo "$used" | grep -qx "$n"; do n=$((n+1)); done
+  echo "$n"
+}
+
+# ---- commands ----------------------------------------------------------------
+cmd_ls() {
+  orbctl list -f json | python3 -c "
+import json,sys,re
+rows=[]
+for x in json.load(sys.stdin):
+    mobj=re.match(r'^${PREFIX}(.+)\$', x['name'])
+    if mobj: rows.append((mobj.group(1), x['state']))
+w=max([len(r[0]) for r in rows]+[2])
+for name,state in sorted(rows, key=lambda r:(r[0]!='base', r[0])):
+    print(f'  {name:<{w}}  {state}')
+"
+}
+
+cmd_new() {
+  exists "$BASE" || die "base machine '$BASE' not found — run 'oa base build' first"
+  local n; n=$(next_num)
+  local machine="${PREFIX}${n}"
+  echo "oa: cloning $BASE -> $machine ..."
+  orbctl clone "$BASE" "$machine"
+  orbctl start "$machine"
+  echo "oa: agent $n ready  ($machine)"
+}
+
+cmd_rm() {
+  local machine; machine=$(m "$@")
+  exists "$machine" || die "agent $1 ($machine) does not exist"
+  read -rp "oa: delete $machine? [y/N] " ans
+  case "$ans" in
+    y|Y) orbctl stop "$machine" 2>/dev/null || true; orbctl delete "$machine"; echo "oa: deleted $machine" ;;
+    *)   echo "oa: aborted" ;;
+  esac
+}
+
+cmd_start() { local machine; machine=$(m "$@"); orbctl start "$machine"; echo "oa: started $machine"; }
+cmd_stop()  { local machine; machine=$(m "$@"); orbctl stop  "$machine"; echo "oa: stopped $machine"; }
+
+cmd_codex() {
+  local machine; machine=$(m "$@")
+  orb -m "$machine" bash -lc ". ~/.asdf/asdf.sh && cd $REPO_DIR && exec codex --yolo"
+}
+
+cmd_shell() {
+  local machine; machine=$(m "$@")
+  orb -m "$machine" bash -lc ". ~/.asdf/asdf.sh && cd $REPO_DIR && exec bash"
+}
+
+cmd_run() {
+  local machine; machine=$(m "$@"); shift
+  [ "${1:-}" = "--" ] && shift
+  [ $# -ge 1 ] || die "nothing to run (usage: oa run <n> -- <cmd>)"
+  vrun "$machine" "$*"
+}
+
+cmd_code() {
+  local machine; machine=$(m "$@")
+  local home; home=$(orb -m "$machine" bash -lc 'echo $HOME')
+  code --remote "ssh-remote+${machine}@orb" "${home}/projects/shilo-ai-mono"
+}
+
+cmd_doctor() {
+  local machine; machine=$(m "$@")
+  exists "$machine" || die "agent $1 ($machine) does not exist"
+  vrun "$machine" '
+    echo "node:  $(node --version)"
+    echo "pnpm:  $(pnpm --version)"
+    echo "codex: $(codex --version)"
+    echo "gh:    $(gh api user --jq .login 2>/dev/null || echo NOT-AUTHED)"
+    echo "repo:  $(git branch --show-current)"
+    echo "--- host infra ---"
+    for p in 5432 6379 8080 7233; do
+      (exec 3<>/dev/tcp/host.docker.internal/$p) 2>/dev/null && echo "$p OK" || echo "$p FAIL"
+    done
+  '
+}
+
+cmd_base() {
+  case "${1:-}" in
+    build)  base_build ;;
+    update) base_update ;;
+    *) die "usage: oa base build|update" ;;
+  esac
+}
+
+base_build() {
+  exists "$BASE" && die "base '$BASE' already exists — delete it first or use 'oa base update'"
+  echo "oa: creating clean base $BASE ..."
+  orbctl create ubuntu:24.04 "$BASE" \
+    --isolated --forward-ssh-agent \
+    --mount "$HOME/.codex:/mnt/host-codex"
+  orb -m "$BASE" -u root apt-get update
+  orb -m "$BASE" -u root apt-get install -y git curl ca-certificates build-essential gh
+  orb -m "$BASE" bash -lc "
+    set -e
+    git clone https://github.com/asdf-vm/asdf.git ~/.asdf --branch $ASDF_VERSION --depth 1
+    grep -q asdf.sh ~/.bashrc || echo '. \$HOME/.asdf/asdf.sh' >> ~/.bashrc
+    . ~/.asdf/asdf.sh
+    asdf plugin add nodejs || true
+    asdf install nodejs $NODE_VERSION
+    asdf global nodejs $NODE_VERSION
+    corepack enable
+    corepack prepare pnpm@$PNPM_VERSION --activate
+    asdf reshim nodejs
+    rm -rf ~/.codex && ln -s /mnt/host-codex ~/.codex
+    npm install -g @openai/codex
+    asdf reshim nodejs
+    git config --global user.name  \"$(git config --global user.name)\"
+    git config --global user.email \"$(git config --global user.email)\"
+  "
+  gh auth token | orb -m "$BASE" gh auth login --with-token
+  orb -m "$BASE" gh auth setup-git
+  orb -m "$BASE" bash -lc "
+    set -e
+    mkdir -p ~/projects && cd ~/projects
+    gh repo clone $REPO_SLUG
+    . ~/.asdf/asdf.sh && cd shilo-ai-mono
+    pnpm install --frozen-lockfile
+    pnpm build:packages || true
+  "
+  orbctl stop "$BASE"
+  echo "oa: base built and frozen ($BASE)"
+}
+
+base_update() {
+  exists "$BASE" || die "base '$BASE' not found"
+  orbctl start "$BASE"
+  vrun "$BASE" 'git pull --ff-only && pnpm install --frozen-lockfile && pnpm build:packages || true'
+  orbctl stop "$BASE"
+  echo "oa: base updated and frozen ($BASE)"
+}
+
+usage() {
+  cat <<'EOF'
+oa — OrbStack Codex agents. Agents are addressed by number.
+
+  oa new                 clone base -> next free agent, start it
+  oa ls                  list agents and status
+  oa start <n>           start agent n
+  oa stop  <n>           stop agent n
+  oa rm    <n>           delete agent n (confirms)
+
+  oa codex <n>           run `codex --yolo` in the repo (interactive)
+  oa shell <n>           interactive shell in the repo (asdf loaded)
+  oa run   <n> -- <cmd>  run a command in the repo (asdf loaded)
+  oa code  <n>           open VS Code Remote on the repo
+  oa doctor <n>          health check (node/pnpm/codex/gh + host infra)
+
+  oa base build          provision a clean base VM from scratch
+  oa base update         git pull + pnpm install + rebuild, refreeze base
+EOF
+}
+
+# ---- dispatch ----------------------------------------------------------------
+CMD="${1:-}"; shift || true
+case "$CMD" in
+  new)    cmd_new "$@" ;;
+  ls|list) cmd_ls "$@" ;;
+  start)  cmd_start "$@" ;;
+  stop)   cmd_stop "$@" ;;
+  rm|delete) cmd_rm "$@" ;;
+  codex)  cmd_codex "$@" ;;
+  shell)  cmd_shell "$@" ;;
+  run)    cmd_run "$@" ;;
+  code)   cmd_code "$@" ;;
+  doctor) cmd_doctor "$@" ;;
+  base)   cmd_base "$@" ;;
+  ""|-h|--help|help) usage ;;
+  *) die "unknown command '$CMD' (try 'oa --help')" ;;
+esac
