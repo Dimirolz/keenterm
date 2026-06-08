@@ -1,9 +1,79 @@
-# Orb Agent Handoff 2 — Per-Agent Hasura
+# Orb Agent Handoff 2 — Shared-Host Hasura (Plan B, validated)
 
 Continues from `HANDOFF.md` (Experiment 1 = clean base VM, repo + baked
 `pnpm install`, fast clone verified).
 
-## Why this matters for the PR loop (verified)
+## Decision (locked in, experimentally verified)
+
+Each agent VM needs its **own** `hasura/graphql-engine` (because its
+`auth_hook`/actions/webhook point at the backend running **inside that VM**).
+We do **NOT** run docker inside the VMs. Instead:
+
+```text
+one shared Postgres on host        -> N lightweight databases (agent_N)
+N capped graphql-engine containers -> on the host OrbStack docker engine
+                                      one per agent, memory-capped
+no docker inside the VM            -> base stays small, clones stay fast
+```
+
+Why this over docker-in-VM:
+
+- graphql-engine (~60 MB) is needed per agent either way.
+- docker-in-VM also costs an **80–150 MB dockerd per agent** + bakes docker
+  into the base (bigger image, slower clones, more disk per agent).
+- Plan B reuses the dockerd that OrbStack already runs + the shared Postgres
+  that already runs. More free RAM = more parallel agents.
+
+Tradeoff accepted: hasura lives on the **host**, not in the VM. So the agent
+lifecycle (`oa new` / `oa rm`) must also create/remove the host container and
+the `agent_N` database. That coupling is the price for the RAM/clone savings.
+
+```diagram
+                  ┌──────── host OrbStack docker (one engine) ────────┐
+                  │                                                    │
+  shilo-agent-1 ──┤  orb-hasura-1  :18081  --memory 512m              │
+   (.orb.local)   │    source+metadata DB = agent_1                   │──┐
+   auth_hook ◀────┤    auth_hook → shilo-agent-1.orb.local:8010       │  │ host.docker
+                  │                                                    │  │ .internal:5432
+  shilo-agent-2 ──┤  orb-hasura-2  :18082  --memory 512m              │  │
+   (.orb.local)   │    source+metadata DB = agent_2                   │──┤
+   auth_hook ◀────┤    auth_hook → shilo-agent-2.orb.local:8010       │  ▼
+                  │                                                    │ shilo-postgres-1
+                  └────────────────────────────────────────────────-─┘ (shared, :5432)
+```
+
+## Experiment results (2026-06-08, on host OrbStack)
+
+Spun up two capped graphql-engine containers on the host engine, each with
+its own database on the shared `shilo-postgres-1` (postgres:15):
+
+```text
+orb-hasura-1  :18081  --memory 512m  metadata+data DB = agent_1
+orb-hasura-2  :18082  --memory 512m  metadata+data DB = agent_2
+```
+
+Verified:
+
+- Both `/healthz` → `OK`, GraphQL responds.
+- Memory cap works: limit 512 MiB, idle usage ~50–65 MiB each
+  (two engines ≈ 120 MiB total on host; no extra dockerd per agent).
+- **Isolation proven**: created table `widget` in DB `agent_1`, tracked it on
+  hasura-1 → query returns `only-in-agent-1`; same query on hasura-2 →
+  `field 'widget' not found`. Separate metadata + separate DB ⇒ agents do
+  not see each other.
+- Per-agent wiring confirmed: each container's `AUTH_HOOK`/`API_URL`/
+  `WEBHOOK_URL` point at its own `shilo-agent-N.orb.local:8010`.
+
+Key correction we learned: there is **no separate metadata Postgres per
+agent**. Postgres is one process; per agent we create a logical `agent_N`
+**database**, and hasura stores its metadata in the `hdb_catalog` schema
+inside it. Cost of metadata isolation ≈ 0 RAM.
+
+Note from the experiment: `pg_add_source` (the `default` source) and table
+tracking are normally done by the repo's `hasura migrate apply` +
+`metadata apply`. In the experiment we added the source by hand as a stand-in.
+
+## Why hasura is needed for the full PR loop (verified)
 
 The minimal "Codex change -> PR" loop works WITHOUT infra, but the repo's
 `.husky/pre-push` hook runs:
@@ -14,10 +84,11 @@ pnpm turbo run lint  --filter @shilo/web[...]
 pnpm turbo run tsc:check --filter @shilo/web[...]
 ```
 
-`fetch-schema` requires a running Hasura. So:
+`fetch-schema` (`packages/graphql-api/schema.ts`) hits
+`${HASURA_URL}/v1/graphql` with `x-hasura-admin-secret`. So:
 
 ```text
-push WITH hooks   -> needs per-agent Hasura (this experiment)
+push WITH hooks   -> needs per-agent Hasura (this plan)
 push --no-verify  -> works today (smoke-tested, PR #4037)
 ```
 
@@ -32,181 +103,185 @@ Other gotchas found during the smoke test:
 - git identity + `gh auth setup-git` are now baked into the base.
 ```
 
-## Goal
+## Config reference (from repo + running host stack)
 
-Give each agent VM its own Hasura GraphQL engine, wired to the backend
-running **inside that same VM**.
-
-Key directive:
+graphql-engine image:
 
 ```text
-Per agent we ONLY run hasura/graphql-engine.
-NOT postgres. NOT data-connector-agent.
+hasura/graphql-engine:v2.40.0     # already pulled on host
 ```
 
-Reasons:
-
-- `postgres` → use shared host infra (`host.docker.internal:5432`).
-- `data-connector-agent` → only needed for athena/mariadb/mysql/oracle/
-  snowflake connectors. Not used. Skip it.
-- `graphql-engine` → must be per-agent because it points at the backend
-  (auth hook / actions / webhook) that lives inside the agent VM.
-
-So instead of the full `hasura/docker-compose.yml`, run a single
-graphql-engine container per agent.
-
-## Starting State
-
-```bash
-orbctl list
-```
-
-```text
-shilo-agent-base   stopped   frozen base (Node 22.22.0, pnpm 10.16.0, repo baked)
-shilo-agent-1      stopped   verification clone
-```
-
-Repo inside VM:
-
-```text
-~/projects/shilo-ai-mono   (branch: dev)
-```
-
-Remember to load asdf in every non-login shell:
-
-```bash
-. ~/.asdf/asdf.sh
-```
-
-## What Hasura Needs (from repo)
-
-`hasura/config.yaml`:
-
-```yaml
-version: 3
-endpoint: http://localhost:8080
-metadata_directory: metadata
-admin_secret: ${HASURA_GRAPHQL_ADMIN_SECRET}
-actions:
-  kind: synchronous
-  handler_webhook_baseurl: http://localhost:3000
-```
-
-graphql-engine env (from `hasura/docker-compose.yml` + `hasura/.env.example`):
+Env that the host dev stack uses (admin secret etc.), mirror per agent:
 
 ```env
-HASURA_GRAPHQL_METADATA_DATABASE_URL=<pg url>
-PG_DATABASE_URL=<pg url>
-HASURA_GRAPHQL_ADMIN_SECRET=<secret>
+HASURA_GRAPHQL_METADATA_DATABASE_URL=postgres://postgres:postgrespassword@host.docker.internal:5432/agent_N
+PG_DATABASE_URL=postgres://postgres:postgrespassword@host.docker.internal:5432/agent_N
+HASURA_GRAPHQL_ADMIN_SECRET=hasura_graphql_admin_secret
 HASURA_GRAPHQL_CORS_DOMAIN=*
 HASURA_GRAPHQL_EXPERIMENTAL_FEATURES=naming_convention
-HASURA_GRAPHQL_JWT_SECRET=<jwt secret>          # if using JWT
-HASURA_GRAPHQL_UNAUTHORIZED_ROLE=anonymous
-HASURA_GRAPHQL_AUTH_HOOK=<backend auth hook url>
-API_URL=<backend api url>
-WEBHOOK_URL=<backend webhook url>
 HASURA_GRAPHQL_ENABLE_CONSOLE=false
 HASURA_GRAPHQL_DEV_MODE=true
+HASURA_GRAPHQL_AUTH_HOOK=http://shilo-agent-N.orb.local:8010/auth/hasura
+API_URL=http://shilo-agent-N.orb.local:8010
+WEBHOOK_URL=http://shilo-agent-N.orb.local:8010
 ```
 
-Image used in repo:
-
-```text
-hasura/graphql-engine:v2.40.0
-```
-
-## Backend Ports (from apps/backend/.env.example)
+Backend ports (apps/backend/.env.example):
 
 ```env
-BASE_URL=http://localhost:8010    # backend HTTP
+BASE_URL=http://localhost:8010    # backend HTTP, exposed as shilo-agent-N.orb.local:8010
 APP_URL=http://localhost:3001
-# hasura actions handler baseurl in config = http://localhost:3000
+# hasura actions handler baseurl (hasura/config.yaml) = http://localhost:3000
 ```
 
-Backend also reads (apps/backend/.env.example):
+Backend → hasura wiring (apps/backend/.env.example):
 
 ```env
-HASURA_URL=""                     # backend -> hasura
-HASURA_GRAPHQL_ADMIN_SECRET=""
-WEBHOOK_URL=""
+HASURA_URL=http://localhost:18081      # the agent's own hasura on host
+HASURA_GRAPHQL_ADMIN_SECRET=hasura_graphql_admin_secret
+WEBHOOK_URL=...
 ```
 
-So the wiring is bidirectional:
-
-```diagram
-╭──────────────── agent VM (shilo-agent-N) ─────────────────╮
-│                                                            │
-│  backend (8010 / 3000)  ◀── auth hook / actions ──┐        │
-│        │  HASURA_URL                               │        │
-│        ▼                                           │        │
-│  graphql-engine :8080  ─────────────────────────--┘        │
-│        │ PG_DATABASE_URL                                    │
-╰────────┼───────────────────────────────────────────────---╯
-         ▼
-   host.docker.internal:5432   (shared Postgres on host)
-```
-
-## Hasura CLI Scripts (already in repo)
-
-From `hasura/package.json` (package `@shilo/hasura`):
-
-```json
-"hasura:metadata": "hasura metadata apply && hasura metadata reload",
-"db:migrate":      "hasura migrate apply --all-databases && pnpm run hasura:metadata"
-```
-
-Root `package.json`:
+Hasura CLI scripts already in repo (`hasura/package.json`, root
+`package.json`):
 
 ```text
-pnpm migrate          -> turbo run db:migrate
+pnpm migrate          -> turbo run db:migrate (migrate apply + metadata apply)
 pnpm metadata:apply   -> pnpm --filter @shilo/hasura hasura:metadata
 pnpm h:console        -> hasura console --project ./hasura
 ```
 
-Note: `hasura` CLI is NOT yet installed in the base VM. Will need to add it
-(or run via npx) for migrate / metadata apply.
+## Provisioning agent DB: clone, don't migrate (validated)
 
-## Open Decisions (resolve before building)
+Instead of `hasura migrate apply` + `metadata apply` from scratch, **clone
+the existing main dev DB** into `agent_N`. This is faster and removes the
+need for the hasura CLI in the base.
 
-1. How to run graphql-engine per agent:
-   - (a) `docker run` INSIDE each VM (needs docker installed in VM; full
-     isolation; container reaches backend via VM localhost / 172.17.0.1).
-   - (b) container on HOST OrbStack docker, one per agent, AUTH_HOOK ->
-     `shilo-agent-N.orb.local:<port>` (no docker in VM, but less isolated).
-   Lean (a) for isolation consistency with the rest of the design.
+Why it works cleanly: the `default` source stores its connection as
+`{"from_env": "PG_DATABASE_URL"}` (NOT a literal URL). So metadata is not
+tied to a database name — copy it into `agent_N`, start the engine with
+`PG_DATABASE_URL=...agent_N`, and the source auto-retargets.
 
-2. Postgres strategy:
-   - Shared host Postgres (`host.docker.internal:5432`) is simplest, but
-     multiple agents would share DB state -> breaks isolation.
-   - Per-agent DB (separate database/schema on shared PG, or a PG per VM)
-     keeps isolation. Decide based on how much state the backend mutates.
+```bash
+docker exec shilo-postgres-1 psql -U postgres -c "CREATE DATABASE agent_N;"
+docker exec shilo-postgres-1 bash -lc \
+  "pg_dump -U postgres --no-owner --no-privileges -d postgres | psql -U postgres -d agent_N -q"
+```
 
-3. `HASURA_GRAPHQL_JWT_SECRET` vs `HASURA_GRAPHQL_AUTH_HOOK`: confirm which
-   auth mode the backend expects locally.
+This copies BOTH the app schema/data (`public`) AND the hasura metadata
+(`hdb_catalog`). `pg_dump` runs against the live main DB (consistent
+snapshot); note `CREATE DATABASE ... TEMPLATE postgres` does NOT work while
+the main hasura/backend hold connections, so use dump|restore.
 
-4. Port exposure: backend already plans `http://shilo-agent-N.orb.local:8010`.
-   Decide the public hasura port (e.g. `:8080` ->
-   `http://shilo-agent-N.orb.local:8080`).
+Validated (agent_3, port 18083): engine came up with **502 query fields
+exposed, zero migrations run**. The only `inconsistent_objects` were the
+env-driven ones (remote schema `vendorApi` → `VENDOR_API_URL`; event
+triggers `userDeleted`/`integrationCreated` → `WEBHOOK_URL`; and the remote
+relationships that cascade off `vendorApi`). Those become consistent once the
+container is started with `VENDOR_API_URL` / `WEBHOOK_URL` / `AUTH_HOOK`
+pointing at the agent's backend — the clone itself (tables, permissions,
+relationships) is clean.
 
-5. Where to get real env values (admin secret, jwt secret, API keys). Check
-   staging / 1Password; `hasura/db:sync` pulls from staging.
+Data mode is a choice (three options, validated 2026-06-08):
 
-## Rough Plan
+```text
+                       data        disk/agent   data isolation   PG procs
+ shared data           real        ~9 MB(meta)  NO               0 (shared)
+ schema + enum seed    empty       ~15 MB       yes              0 (shared)
+ btrfs CoW (golden)    real        ~0 (CoW)     YES              1 per agent
+```
 
-1. Install docker inside base VM (if going with option a). Re-freeze base.
-2. Install hasura CLI in base (or use npx). Re-freeze base.
-3. On an agent clone:
-   - start backend (`pnpm b:dev`) inside VM.
-   - run graphql-engine container with env above, PG -> host or per-agent.
-   - `pnpm migrate` (migrate + metadata apply) against the agent's hasura.
-4. Verify:
-   - `http://shilo-agent-1.orb.local:8080/healthz`
-   - GraphQL query through hasura hits backend auth hook successfully.
-   - backend `HASURA_URL` round-trips.
+### Option 1 — shared data, cloned metadata only (lightest)
 
-## Open Questions Carried Over
+Clone ONLY `hdb_catalog` into a tiny per-agent metadata DB; point the data
+source at the shared main `postgres`:
 
-- Per-agent vs shared Postgres (see decision 2).
-- Whether to bake docker + hasura CLI + a pulled graphql-engine image into
-  the base so clones stay fast.
-- Disk growth per agent once Hasura + backend are running.
+```bash
+docker exec shilo-postgres-1 psql -U postgres -c "CREATE DATABASE agent_N_meta;"
+docker exec shilo-postgres-1 bash -lc \
+  "pg_dump -U postgres --no-owner --no-privileges --schema=hdb_catalog -d postgres | psql -U postgres -d agent_N_meta -q"
+# engine: HASURA_GRAPHQL_METADATA_DATABASE_URL=...agent_N_meta
+#         PG_DATABASE_URL=...postgres   (shared real data)
+```
+
+Validated: metadata DB ~8.6 MB, **502 query fields**, reads real data. But
+all agents read/write the SAME main `postgres` — no data isolation; agent
+mutations pollute the shared dev DB. Use only if agents read (don't mutate)
+or shared mutation is acceptable.
+
+### Option 2 — schema + enum seed (isolated, empty data)
+
+`pg_dump --schema-only` for `public` + data for `hdb_catalog` + data for the
+`is_enum` tables only (Hasura refuses to track an empty enum table, so the
+reference/enum tables must be seeded). ~15 MB, isolated, agent starts empty
+and mutates its own copy. Caveat: no real transactional data to start from.
+
+### Option 3 — btrfs copy-on-write golden (isolated, real data, ~0 disk)
+
+The OrbStack docker volume filesystem is **btrfs with reflink/CoW support**
+(verified: `/var/lib/postgresql/data` is `btrfs` on `/dev/vdb1`,
+`cp --reflink=always` works). So we can give each agent its own full real
+DB without physically copying the ~1 GB:
+
+```text
+- keep one GOLDEN postgres cluster (data dir) = snapshot of main data,
+  refreshed periodically, kept STOPPED/quiesced.
+- per agent:  cp --reflink=always -a golden agent_N   (or btrfs subvolume
+  snapshot) — instant, ~0 disk; blocks are shared until written.
+- run a per-agent postgres container on agent_N's data dir.
+- agent's hasura: cloned metadata DB + data source -> the agent's own CoW PG.
+```
+
+Validated in a btrfs lab (golden = 1.6 GB cluster, 2M rows):
+
+```text
+- reflink clone of 1.6 GB data dir: 0.02 s  (a real copy would take seconds)
+- isolation: mutated agent_a -> 2.5M rows; agent_b stayed 2.0M (untouched)
+- 8.2 GB logical across golden + 3 clones lived in ~1 GB physical blocks
+```
+
+Cost: one postgres process per agent (~30–100 MB RAM idle) and the golden
+must be cloned from a *stopped/consistent* cluster (cannot reflink a live
+data dir safely). This is the only option that gives real data + full
+mutation isolation + ~0 disk, and it mirrors the project's design (VM is
+CoW-cloned by OrbStack; the DB is CoW-cloned by btrfs).
+
+## What still needs adding to the base / oa
+
+1. **`oa hasura up <n>` / `oa hasura down <n>`** — on startup: create the
+   `agent_N` database and clone the main DB into it (above), then `docker run`
+   the capped graphql-engine (the command we validated) with the per-agent
+   env. On teardown: `docker rm -f` the container and `DROP DATABASE agent_N`.
+2. Wire `oa new` / `oa rm` to call the above so an agent gets a hasura
+   automatically and cleans it up.
+3. Confirm the host port scheme (experiment used `:18081`, `:18082`,
+   `:18083`).
+
+Note: hasura CLI is NO LONGER required in the base for provisioning, since we
+clone instead of migrate. (CLI may still be wanted later for `pnpm migrate` /
+`h:console` workflows inside an agent, but it is not needed to stand up the
+engine.)
+
+## Open questions carried over
+
+- **auth_hook round-trip not yet tested live**: the agent VMs were not
+  running a backend during the experiment. Wiring is correct, but verify a
+  real GraphQL query flows through the auth hook into the in-VM backend once
+  `pnpm b:dev` runs inside the VM.
+- `HASURA_GRAPHQL_JWT_SECRET` vs `HASURA_GRAPHQL_AUTH_HOOK`: confirm which
+  auth mode the backend expects locally (host stack uses AUTH_HOOK).
+- Real secrets source (admin secret, jwt secret, API keys) for non-local
+  use; `hasura/db:sync` pulls from staging.
+- Disk/RAM growth once N backends + N hasuras run in parallel.
+
+## Experiment cleanup
+
+If the `orb-hasura-1/2` containers and `agent_1/2` databases from the
+experiment are still around and you want them gone:
+
+```bash
+docker rm -f orb-hasura-1 orb-hasura-2 orb-hasura-3
+docker exec shilo-postgres-1 psql -U postgres -c "DROP DATABASE agent_1;"
+docker exec shilo-postgres-1 psql -U postgres -c "DROP DATABASE agent_2;"
+docker exec shilo-postgres-1 psql -U postgres -c "DROP DATABASE agent_3;"
+```

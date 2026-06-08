@@ -11,6 +11,7 @@ REPO_DIR='~/projects/shilo-ai-mono'   # path inside the VM (~ expands in VM)
 NODE_VERSION="22.22.0"
 ASDF_VERSION="v0.15.0"
 PNPM_VERSION="10.16.0"
+HASURA_CLI_VERSION="v2.40.0"
 
 # ---- helpers -----------------------------------------------------------------
 die() { echo "oa: $*" >&2; exit 1; }
@@ -30,6 +31,15 @@ exists() { orbctl info "$1" >/dev/null 2>&1; }
 vrun() {
   local machine="$1"; shift
   orb -m "$machine" bash -lc ". ~/.asdf/asdf.sh && cd $REPO_DIR && $*"
+}
+
+install_hasura_cli() {
+  local machine="$1"
+  orb -m "$machine" -u root bash -lc "
+    set -e
+    curl -L https://github.com/hasura/graphql-engine/raw/stable/cli/get.sh | VERSION=$HASURA_CLI_VERSION bash
+    hasura version --skip-update-check
+  "
 }
 
 # next free agent number (1,2,3,...)
@@ -132,6 +142,7 @@ base_build() {
     --mount "$HOME/.codex:/mnt/host-codex"
   orb -m "$BASE" -u root apt-get update
   orb -m "$BASE" -u root apt-get install -y git curl ca-certificates build-essential gh
+  install_hasura_cli "$BASE"
   orb -m "$BASE" bash -lc "
     set -e
     git clone https://github.com/asdf-vm/asdf.git ~/.asdf --branch $ASDF_VERSION --depth 1
@@ -166,6 +177,7 @@ base_build() {
 base_update() {
   exists "$BASE" || die "base '$BASE' not found"
   orbctl start "$BASE"
+  install_hasura_cli "$BASE"
   vrun "$BASE" 'git pull --ff-only && pnpm install --frozen-lockfile && pnpm build:packages || true'
   orbctl stop "$BASE"
   echo "oa: base updated and frozen ($BASE)"
