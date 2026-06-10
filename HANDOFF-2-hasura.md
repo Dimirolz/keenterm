@@ -7,39 +7,49 @@ Continues from `HANDOFF.md` (Experiment 1 = clean base VM, repo + baked
 
 Each agent VM needs its **own** `hasura/graphql-engine` (because its
 `auth_hook`/actions/webhook point at the backend running **inside that VM**).
-We do **NOT** run docker inside the VMs. Instead:
+We do **NOT** run docker inside the VMs. Instead, everything per-agent runs on
+the **host OrbStack docker engine**:
 
 ```text
-one shared Postgres on host        -> N lightweight databases (agent_N)
-N capped graphql-engine containers -> on the host OrbStack docker engine
-                                      one per agent, memory-capped
-no docker inside the VM            -> base stays small, clones stay fast
+golden Postgres data dir (stopped) -> btrfs CoW clone per agent (~0 disk)
+N per-agent Postgres containers     -> one real isolated DB per agent
+N capped graphql-engine containers  -> one per agent, memory-capped
+no docker inside the VM             -> base stays small, clones stay fast
 ```
 
-Why this over docker-in-VM:
+**Locked-in decision: every agent gets its own cloned database (Option 3,
+btrfs CoW golden).** We always start an agent from a full copy of the real dev
+data, with full mutation isolation. The cost is one Postgres process per agent
+(~30–100 MB idle); the disk cost is ~0 because btrfs reflink shares unwritten
+blocks. This is an accepted tradeoff — cheap isolation for the price of one
+extra pg per agent — and it mirrors the project's design (the VM is CoW-cloned
+by OrbStack; the DB is CoW-cloned by btrfs).
+
+Why per-agent docker (not docker-in-VM):
 
 - graphql-engine (~60 MB) is needed per agent either way.
 - docker-in-VM also costs an **80–150 MB dockerd per agent** + bakes docker
   into the base (bigger image, slower clones, more disk per agent).
-- Plan B reuses the dockerd that OrbStack already runs + the shared Postgres
-  that already runs. More free RAM = more parallel agents.
+- This reuses the dockerd that OrbStack already runs. More free RAM = more
+  parallel agents.
 
-Tradeoff accepted: hasura lives on the **host**, not in the VM. So the agent
-lifecycle (`oa new` / `oa rm`) must also create/remove the host container and
-the `agent_N` database. That coupling is the price for the RAM/clone savings.
+Tradeoff accepted: hasura **and** the agent's Postgres live on the **host**,
+not in the VM. So the agent lifecycle (`oa new` / `oa rm`) must also
+create/remove the host containers (pg + hasura) and the CoW data dir. That
+coupling is the price for the RAM/clone savings + real data isolation.
 
 ```diagram
                   ┌──────── host OrbStack docker (one engine) ────────┐
                   │                                                    │
   shilo-agent-1 ──┤  orb-hasura-1  :18081  --memory 512m              │
-   (.orb.local)   │    source+metadata DB = agent_1                   │──┐
-   auth_hook ◀────┤    auth_hook → shilo-agent-1.orb.local:8010       │  │ host.docker
-                  │                                                    │  │ .internal:5432
-  shilo-agent-2 ──┤  orb-hasura-2  :18082  --memory 512m              │  │
-   (.orb.local)   │    source+metadata DB = agent_2                   │──┤
-   auth_hook ◀────┤    auth_hook → shilo-agent-2.orb.local:8010       │  ▼
-                  │                                                    │ shilo-postgres-1
-                  └────────────────────────────────────────────────-─┘ (shared, :5432)
+   (.orb.local)   │    metadata+data ─────▶ orb-pg-1 :15441          │
+   auth_hook ◀────┤    auth_hook → shilo-agent-1.orb.local:8010       │   golden pg
+                  │                         (CoW clone of golden)     │   data dir
+  shilo-agent-2 ──┤  orb-hasura-2  :18082  --memory 512m              │   (stopped)
+   (.orb.local)   │    metadata+data ─────▶ orb-pg-2 :15442          │──▶ btrfs reflink
+   auth_hook ◀────┤    auth_hook → shilo-agent-2.orb.local:8010       │   per agent
+                  │                         (CoW clone of golden)     │   (~0 disk)
+                  └────────────────────────────────────────────────-─┘
 ```
 
 ## Experiment results (2026-06-08, on host OrbStack)
@@ -182,16 +192,27 @@ container is started with `VENDOR_API_URL` / `WEBHOOK_URL` / `AUTH_HOOK`
 pointing at the agent's backend — the clone itself (tables, permissions,
 relationships) is clean.
 
-Data mode is a choice (three options, validated 2026-06-08):
+Data mode was a choice between three validated options (2026-06-08). **We
+picked Option 3.** Options 1 and 2 are kept below as rejected alternatives /
+fallbacks only.
 
 ```text
                        data        disk/agent   data isolation   PG procs
  shared data           real        ~9 MB(meta)  NO               0 (shared)
  schema + enum seed    empty       ~15 MB       yes              0 (shared)
- btrfs CoW (golden)    real        ~0 (CoW)     YES              1 per agent
+ btrfs CoW (golden) ◀  real        ~0 (CoW)     YES   ✅ CHOSEN   1 per agent
 ```
 
-### Option 1 — shared data, cloned metadata only (lightest)
+Rationale: agents must be able to mutate real data without polluting each
+other or the shared dev DB, and CoW makes that ~free on disk. The only cost is
+one pg process per agent, which we accept.
+
+### Option 3 (CHOSEN) — btrfs copy-on-write golden (isolated, real data, ~0 disk)
+
+See the full description below. This is the path `oa`/the control plane will
+implement for every agent.
+
+### Option 1 (rejected) — shared data, cloned metadata only (lightest)
 
 Clone ONLY `hdb_catalog` into a tiny per-agent metadata DB; point the data
 source at the shared main `postgres`:
@@ -209,14 +230,14 @@ all agents read/write the SAME main `postgres` — no data isolation; agent
 mutations pollute the shared dev DB. Use only if agents read (don't mutate)
 or shared mutation is acceptable.
 
-### Option 2 — schema + enum seed (isolated, empty data)
+### Option 2 (rejected) — schema + enum seed (isolated, empty data)
 
 `pg_dump --schema-only` for `public` + data for `hdb_catalog` + data for the
 `is_enum` tables only (Hasura refuses to track an empty enum table, so the
 reference/enum tables must be seeded). ~15 MB, isolated, agent starts empty
 and mutates its own copy. Caveat: no real transactional data to start from.
 
-### Option 3 — btrfs copy-on-write golden (isolated, real data, ~0 disk)
+### Option 3 (CHOSEN) — btrfs copy-on-write golden — full description
 
 The OrbStack docker volume filesystem is **btrfs with reflink/CoW support**
 (verified: `/var/lib/postgresql/data` is `btrfs` on `/dev/vdb1`,
@@ -248,14 +269,19 @@ CoW-cloned by OrbStack; the DB is CoW-cloned by btrfs).
 
 ## What still needs adding to the base / oa
 
-1. **`oa hasura up <n>` / `oa hasura down <n>`** — on startup: create the
-   `agent_N` database and clone the main DB into it (above), then `docker run`
-   the capped graphql-engine (the command we validated) with the per-agent
-   env. On teardown: `docker rm -f` the container and `DROP DATABASE agent_N`.
-2. Wire `oa new` / `oa rm` to call the above so an agent gets a hasura
-   automatically and cleans it up.
-3. Confirm the host port scheme (experiment used `:18081`, `:18082`,
-   `:18083`).
+1. **Golden cluster management** — maintain one stopped/quiesced golden
+   Postgres data dir (snapshot of main dev data, refreshed periodically). This
+   is the source for every agent's CoW clone.
+2. **`oa hasura up <n>` / `oa hasura down <n>`** — on startup:
+   `cp --reflink=always` (or btrfs subvolume snapshot) the golden data dir to
+   `agent_N`'s data dir, `docker run` a per-agent Postgres on it
+   (`orb-pg-N :154NN`), then `docker run` the capped graphql-engine
+   (`orb-hasura-N :180NN`) pointed at that pg with the per-agent env. On
+   teardown: `docker rm -f` both containers and delete the CoW data dir.
+3. Wire `oa new` / `oa rm` to call the above so an agent gets its own pg +
+   hasura automatically and cleans them up.
+4. Confirm the host port scheme — hasura `:18081/2/3...`, pg `:15441/2/3...`
+   (one of each per agent).
 
 Note: hasura CLI is NO LONGER required in the base for provisioning, since we
 clone instead of migrate. (CLI may still be wanted later for `pnpm migrate` /
