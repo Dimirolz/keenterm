@@ -1,18 +1,6 @@
-import { Command, CommandExecutor } from "@effect/platform"
-import { NodeContext } from "@effect/platform-node"
-import { Data, Effect, Schema, Stream } from "effect"
+import { Effect, Schema } from "effect"
 import { REPO_DIR } from "./config.js"
-
-export class CommandFailed extends Data.TaggedError("CommandFailed")<{
-  readonly command: string
-  readonly exitCode: number
-  readonly stderr: string
-  readonly stdout: string
-}> {
-  override get message() {
-    return `\`${this.command}\` exited ${this.exitCode}: ${this.stderr || this.stdout}`
-  }
-}
+import { Sh } from "./Sh.js"
 
 const MachineInfo = Schema.Struct({
   name: Schema.String,
@@ -23,33 +11,9 @@ export type MachineInfo = typeof MachineInfo.Type
 
 /** Typed wrapper over the host `orbctl` / `orb` CLIs. */
 export class Machines extends Effect.Service<Machines>()("Machines", {
-  dependencies: [NodeContext.layer],
+  dependencies: [Sh.Default],
   effect: Effect.gen(function* () {
-    const executor = yield* CommandExecutor.CommandExecutor
-
-    const run = (cmd: string, ...args: Array<string>) =>
-      Effect.gen(function* () {
-        const process = yield* executor.start(Command.make(cmd, ...args))
-        const collect = (stream: typeof process.stdout) =>
-          stream.pipe(Stream.decodeText(), Stream.runFold("", (a, b) => a + b))
-        const [exitCode, stdout, stderr] = yield* Effect.all(
-          [process.exitCode, collect(process.stdout), collect(process.stderr)],
-          { concurrency: 3 },
-        )
-        if (exitCode !== 0) {
-          return yield* new CommandFailed({
-            command: [cmd, ...args].join(" "),
-            exitCode,
-            stderr: stderr.trim(),
-            stdout: stdout.trim(),
-          })
-        }
-        return stdout
-      }).pipe(
-        Effect.scoped,
-        // PlatformError (spawn/stream failures) is a defect; CommandFailed is the domain error
-        Effect.catchAll((e) => (e._tag === "CommandFailed" ? Effect.fail(e) : Effect.die(e))),
-      )
+    const { run } = yield* Sh
 
     return {
       list: run("orbctl", "list", "-f", "json").pipe(

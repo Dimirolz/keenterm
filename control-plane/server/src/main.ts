@@ -24,6 +24,8 @@ const errorResponses = {
     HttpServerResponse.json({ error: e.message }, { status: 500 }).pipe(Effect.orDie),
   MachineNotFound: (e: { machine: string }) =>
     HttpServerResponse.json({ error: `${e.machine} does not exist` }, { status: 404 }).pipe(Effect.orDie),
+  HostEnvMissing: (e: { path: string }) =>
+    HttpServerResponse.json({ error: `host backend .env not found at ${e.path}` }, { status: 500 }).pipe(Effect.orDie),
   ParseError: () =>
     HttpServerResponse.json({ error: "bad orbctl output" }, { status: 500 }).pipe(Effect.orDie),
 } as const
@@ -68,6 +70,14 @@ const router = HttpRouter.empty.pipe(
     Effect.gen(function* () {
       const agents = yield* Agents
       yield* agents.stop(yield* agentNumber)
+      return yield* ok({ ok: true })
+    }),
+  ),
+  HttpRouter.post(
+    "/api/agents/:n/stack/up",
+    Effect.gen(function* () {
+      const agents = yield* Agents
+      yield* agents.stackUp(yield* agentNumber)
       return yield* ok({ ok: true })
     }),
   ),

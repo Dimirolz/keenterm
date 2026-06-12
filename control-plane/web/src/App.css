@@ -90,6 +90,19 @@
   font-weight: 600;
   color: #ececea;
 }
+.stack {
+  font-size: 10px;
+  padding: 1px 5px;
+  border-radius: 3px;
+  border: 1px solid #2c4a3a;
+  color: #5fbf8f;
+  cursor: default;
+}
+.stack.partial {
+  border-color: #5a3c20;
+  color: #e8b03a;
+}
+
 .codex {
   margin-left: auto;
   font-size: 11px;

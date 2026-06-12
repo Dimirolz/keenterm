@@ -1,7 +1,9 @@
 import { useCallback, useEffect, useState } from 'react'
-import { api, type AgentInfo } from './api'
+import { api, stackPartial, stackUp, type AgentInfo } from './api'
 import { CodexTerminal } from './CodexTerminal'
 import './App.css'
+
+type AgentAction = 'start' | 'stop' | 'stack-up' | 'doctor' | 'delete'
 
 export default function App() {
   const [agents, setAgents] = useState<AgentInfo[]>([])
@@ -67,6 +69,7 @@ export default function App() {
                 const key = `${action}-${a.n}`
                 if (action === 'start') run(key, () => api.start(a.n))
                 if (action === 'stop') run(key, () => api.stop(a.n))
+                if (action === 'stack-up') run(key, () => api.stackUp(a.n))
                 if (action === 'doctor')
                   run(key, async () => {
                     const { output } = await api.doctor(a.n)
@@ -145,20 +148,30 @@ function AgentRow({
   selected: boolean
   busy: string | null
   onSelect: () => void
-  onAction: (action: 'start' | 'stop' | 'doctor' | 'delete') => void
+  onAction: (action: AgentAction) => void
 }) {
   const running = a.state === 'running'
-  const act = (action: 'start' | 'stop' | 'doctor' | 'delete') => (e: React.MouseEvent) => {
+  const act = (action: AgentAction) => (e: React.MouseEvent) => {
     e.stopPropagation()
     onAction(action)
   }
   const pending = (action: string) => busy === `${action}-${a.n}`
+  const up = stackUp(a.stack)
+  const partial = stackPartial(a.stack)
 
   return (
     <div className={'row' + (selected ? ' sel' : '')} onClick={onSelect}>
       <div className="top">
         <span className={'dot ' + (running ? 'run' : 'off')} />
         <span className="name">agent {a.n}</span>
+        {(up || partial) && (
+          <span
+            className={'stack ' + (up ? 'up' : 'partial')}
+            title={`pg ${a.stack.pg ? '✓' : '✗'} · redis ${a.stack.redis ? '✓' : '✗'} · hasura ${a.stack.hasura ? '✓' : '✗'}`}
+          >
+            {up ? 'stack' : 'stack!'}
+          </span>
+        )}
         {a.codex &&
           (a.working ? (
             <span className="codex work">● working</span>
@@ -174,6 +187,11 @@ function AgentRow({
         ) : (
           <button disabled={busy !== null} onClick={act('start')}>
             {pending('start') ? '…' : 'start'}
+          </button>
+        )}
+        {running && !up && (
+          <button disabled={busy !== null} onClick={act('stack-up')}>
+            {pending('stack-up') ? '…' : 'fix stack'}
           </button>
         )}
         {running && (

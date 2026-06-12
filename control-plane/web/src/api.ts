@@ -1,10 +1,20 @@
+export interface StackStatus {
+  pg: boolean
+  redis: boolean
+  hasura: boolean
+}
+
 export interface AgentInfo {
   n: number
   name: string
   state: string
   codex: boolean
   working: boolean
+  stack: StackStatus
 }
+
+export const stackUp = (s: StackStatus) => s.pg && s.redis && s.hasura
+export const stackPartial = (s: StackStatus) => (s.pg || s.redis || s.hasura) && !stackUp(s)
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(path, init)
@@ -20,5 +30,6 @@ export const api = {
   start: (n: number) => request<unknown>(`/api/agents/${n}/start`, { method: 'POST' }),
   stop: (n: number) => request<unknown>(`/api/agents/${n}/stop`, { method: 'POST' }),
   stopCodex: (n: number) => request<unknown>(`/api/agents/${n}/codex/stop`, { method: 'POST' }),
+  stackUp: (n: number) => request<unknown>(`/api/agents/${n}/stack/up`, { method: 'POST' }),
   doctor: (n: number) => request<{ output: string }>(`/api/agents/${n}/doctor`, { method: 'POST' }),
 }
