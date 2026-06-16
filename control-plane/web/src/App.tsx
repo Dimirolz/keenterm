@@ -1,20 +1,22 @@
-import { useCallback, useEffect, useState } from 'react'
+import { lazy, Suspense, useCallback, useEffect, useState } from 'react'
 import { api, stackPartial, stackUp, type AgentInfo } from './api'
 import { CodexTerminal } from './CodexTerminal'
 import './App.css'
 
-type AgentAction = 'start' | 'stop' | 'stack-up' | 'doctor' | 'delete'
+type AgentAction = 'start' | 'stop' | 'stack-up' | 'diff' | 'delete'
 
 const REPO_DIR = '/home/dmitrijilin/projects/shilo-ai-mono'
 
 const vscodeSshUrl = (machine: string) =>
   `vscode://vscode-remote/ssh-remote+${encodeURIComponent(`${machine}@orb`)}${REPO_DIR}`
 
+const DiffViewer = lazy(() => import('./DiffViewer').then((m) => ({ default: m.DiffViewer })))
+
 export default function App() {
   const [agents, setAgents] = useState<AgentInfo[]>([])
   const [selected, setSelected] = useState<number | null>(null)
   const [busy, setBusy] = useState<string | null>(null)
-  const [doctor, setDoctor] = useState<{ name: string; output: string } | null>(null)
+  const [diff, setDiff] = useState<{ name: string; patch: string } | null>(null)
   const [error, setError] = useState<string | null>(null)
 
   const refresh = useCallback(async () => {
@@ -76,10 +78,10 @@ export default function App() {
                 if (action === 'start') run(key, () => api.start(a.n))
                 if (action === 'stop') run(key, () => api.stop(a.n))
                 if (action === 'stack-up') run(key, () => api.stackUp(a.n))
-                if (action === 'doctor')
+                if (action === 'diff')
                   run(key, async () => {
-                    const { output } = await api.doctor(a.n)
-                    setDoctor({ name: a.name, output })
+                    const { diff: patch } = await api.diff(a.n)
+                    setDiff({ name: a.name, patch })
                   })
                 if (action === 'delete' && confirm(`delete agent ${a.n} (VM ${a.name})?`))
                   run(key, async () => {
@@ -122,14 +124,16 @@ export default function App() {
         {sel !== null && sel.state === 'running' && <CodexTerminal machine={sel.name} />}
       </main>
 
-      {doctor && (
-        <div className="overlay" onClick={() => setDoctor(null)}>
-          <div className="panel" onClick={(e) => e.stopPropagation()}>
+      {diff && (
+        <div className="overlay" onClick={() => setDiff(null)}>
+          <div className="panel diff-panel" onClick={(e) => e.stopPropagation()}>
             <header>
-              <span>doctor · {doctor.name}</span>
-              <button onClick={() => setDoctor(null)}>×</button>
+              <span>diff · {diff.name}</span>
+              <button onClick={() => setDiff(null)}>×</button>
             </header>
-            <pre>{doctor.output}</pre>
+            <Suspense fallback={<div className="empty-diff">loading diff…</div>}>
+              <DiffViewer patch={diff.patch} />
+            </Suspense>
           </div>
         </div>
       )}
@@ -211,8 +215,8 @@ function AgentRow({
           </button>
         )}
         {running && (
-          <button disabled={rowBusy} onClick={act('doctor')}>
-            {pending('doctor') ? '…' : 'doctor'}
+          <button disabled={rowBusy} onClick={act('diff')}>
+            {pending('diff') ? '…' : 'diff'}
           </button>
         )}
         <button className="danger" disabled={rowBusy} onClick={act('delete')}>

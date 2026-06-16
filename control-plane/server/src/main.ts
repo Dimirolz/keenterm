@@ -87,11 +87,11 @@ const router = HttpRouter.empty.pipe(
       return yield* ok({ ok: true })
     }),
   ),
-  HttpRouter.post(
-    "/api/agents/:n/doctor",
+  HttpRouter.get(
+    "/api/agents/:n/diff",
     Effect.gen(function* () {
       const agents = yield* Agents
-      return yield* ok({ output: yield* agents.doctor(yield* agentNumber) })
+      return yield* ok({ diff: yield* agents.diff(yield* agentNumber) })
     }),
   ),
   // Interactive Codex terminal: websocket upgrade, raw stdio passthrough.

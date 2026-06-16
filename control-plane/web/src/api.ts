@@ -31,5 +31,5 @@ export const api = {
   stop: (n: number) => request<unknown>(`/api/agents/${n}/stop`, { method: 'POST' }),
   stopCodex: (n: number) => request<unknown>(`/api/agents/${n}/codex/stop`, { method: 'POST' }),
   stackUp: (n: number) => request<unknown>(`/api/agents/${n}/stack/up`, { method: 'POST' }),
-  doctor: (n: number) => request<{ output: string }>(`/api/agents/${n}/doctor`, { method: 'POST' }),
+  diff: (n: number) => request<{ diff: string }>(`/api/agents/${n}/diff`),
 }

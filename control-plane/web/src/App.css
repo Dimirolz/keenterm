@@ -198,7 +198,7 @@ button.danger:hover:not(:disabled) {
   color: #6f6f78;
 }
 
-/* ---- doctor overlay ---- */
+/* ---- overlays ---- */
 .overlay {
   position: fixed;
   inset: 0;
@@ -235,6 +235,46 @@ button.danger:hover:not(:disabled) {
   font-size: 12px;
   line-height: 1.5;
   color: #c9c9c5;
+}
+
+.diff-panel {
+  width: min(1180px, 94vw);
+  height: min(760px, 88vh);
+  max-height: 88vh;
+}
+.diff-viewer {
+  flex: 1;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: 260px minmax(0, 1fr);
+}
+.diff-tree {
+  min-width: 0;
+  border-right: 1px solid #26262c;
+  background: #141418;
+  display: flex;
+  flex-direction: column;
+}
+.diff-tree-head {
+  padding: 8px 10px;
+  border-bottom: 1px solid #26262c;
+  color: #82828a;
+  font-size: 11px;
+}
+.diff-tree > :last-child {
+  min-height: 0;
+  flex: 1;
+}
+.diff-code {
+  min-width: 0;
+  overflow: auto;
+  background: #1e1e1e;
+}
+.empty-diff {
+  flex: 1;
+  display: grid;
+  place-items: center;
+  color: #82828a;
 }
 
 /* ---- error toast ---- */

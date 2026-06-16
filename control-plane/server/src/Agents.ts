@@ -101,7 +101,10 @@ export class Agents extends Effect.Service<Agents>()("Agents", {
       /** Repair: rerun compose inside the VM. */
       stackUp: (n: number) => requireAgent(n).pipe(Effect.zipRight(stack.up(n))),
 
-      doctor: (n: number) => requireAgent(n).pipe(Effect.zipRight(stack.doctor(n))),
+      diff: (n: number) =>
+        requireAgent(n).pipe(
+          Effect.zipRight(machines.runInRepo(machineFor(n), "git diff --no-ext-diff --find-renames HEAD --")),
+        ),
     }
   }),
 }) {}
