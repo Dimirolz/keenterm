@@ -14,7 +14,6 @@ export interface AgentInfo {
 }
 
 export interface DiffStatus {
-  dirty: boolean
   version: string
 }
 
@@ -34,7 +33,6 @@ export const api = {
   remove: (n: number) => request<unknown>(`/api/agents/${n}`, { method: 'DELETE' }),
   start: (n: number) => request<unknown>(`/api/agents/${n}/start`, { method: 'POST' }),
   stop: (n: number) => request<unknown>(`/api/agents/${n}/stop`, { method: 'POST' }),
-  stopCodex: (n: number) => request<unknown>(`/api/agents/${n}/codex/stop`, { method: 'POST' }),
   stackUp: (n: number) => request<unknown>(`/api/agents/${n}/stack/up`, { method: 'POST' }),
   diff: (n: number) => request<{ diff: string }>(`/api/agents/${n}/diff`),
   diffStatus: (n: number) => request<DiffStatus>(`/api/agents/${n}/diff/status`),

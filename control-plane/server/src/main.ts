@@ -79,14 +79,6 @@ const router = HttpRouter.empty.pipe(
       return yield* ok({ ok: true })
     }),
   ),
-  HttpRouter.post(
-    "/api/agents/:n/codex/stop",
-    Effect.gen(function* () {
-      const agents = yield* Agents
-      yield* agents.stopCodex(yield* agentNumber)
-      return yield* ok({ ok: true })
-    }),
-  ),
   HttpRouter.get(
     "/api/agents/:n/diff/status",
     Effect.gen(function* () {

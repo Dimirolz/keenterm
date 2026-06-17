@@ -137,8 +137,6 @@ export class Agents extends Effect.Service<Agents>()("Agents", {
           Effect.zipRight(machines.delete(machineFor(n))),
         ),
 
-      stopCodex: (n: number) => Effect.sync(() => Codex.killSession(machineFor(n))),
-
       /** Repair: rerun compose inside the VM. */
       stackUp: (n: number) => requireAgent(n).pipe(Effect.zipRight(stack.up(n))),
 
@@ -150,7 +148,7 @@ export class Agents extends Effect.Service<Agents>()("Agents", {
       diffStatus: (n: number) =>
         requireAgent(n).pipe(
           Effect.zipRight(machines.runInRepo(machineFor(n), diffStatusCommand)),
-          Effect.map((status) => ({ dirty: status.length > 0, version: versionFor(status) })),
+          Effect.map((status) => ({ version: versionFor(status) })),
         ),
     }
   }),
