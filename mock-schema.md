@@ -49,3 +49,14 @@
   pnpm --filter @shilo/graphql-api serve-backend-schema
 
   Это лучше, чем просто заметка: через месяц не надо будет заново собирать tsx -e "...".
+
+
+Проверено на `shilo-agent-1`:
+
+- без backend: Hasura стартует с `is_consistent=false`, 15 inconsistent objects;
+- одноразовый mock на `:8010/graphql` отдал introspection один раз и остановился;
+- после старта Hasura через mock: `is_consistent=true`, 0 inconsistent objects.
+
+В `orb` это встроено в `control-plane/server/src/VmStack.ts`: перед стартом
+`graphql-engine` поднимается short-lived schema mock из
+`apps/backend/src/@modules/graphql/schema.gql`.

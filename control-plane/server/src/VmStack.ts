@@ -21,6 +21,43 @@ const detect = (out: string): StackStatus => {
   }
 }
 
+const startBackendSchemaMock = [
+  "test -f apps/backend/src/@modules/graphql/schema.gql",
+  `(
+    pnpm --filter @shilo/graphql-api exec tsx -e '
+      import http from "node:http";
+      import { readFileSync } from "node:fs";
+      import { buildSchema, graphql } from "graphql";
+
+      const schema = buildSchema(readFileSync("../../apps/backend/src/@modules/graphql/schema.gql", "utf8"));
+      const server = http.createServer(async (req, res) => {
+        if (req.method !== "POST") {
+          res.end("OK");
+          return;
+        }
+
+        const chunks = [];
+        for await (const c of req) chunks.push(c);
+        const body = JSON.parse(Buffer.concat(chunks).toString() || "{}");
+        const result = await graphql({
+          schema,
+          source: body.query,
+          variableValues: body.variables,
+          operationName: body.operationName,
+        });
+
+        res.setHeader("content-type", "application/json");
+        res.end(JSON.stringify(result));
+        setTimeout(() => server.close(() => process.exit(0)), 250);
+      });
+
+      server.listen(8010, "0.0.0.0");
+      setTimeout(() => process.exit(2), 120000);
+    ' >/tmp/orb-backend-schema-mock.log 2>&1 &
+    echo $! >/tmp/orb-backend-schema-mock.pid
+  )`,
+].join(" && ")
+
 export class VmStack extends Effect.Service<VmStack>()("VmStack", {
   dependencies: [Machines.Default],
   effect: Effect.gen(function* () {
@@ -37,6 +74,8 @@ export class VmStack extends Effect.Service<VmStack>()("VmStack", {
         (() => {
           const hasuraAppServices = HASURA_SERVICES.filter((s) => s !== "postgres")
           return [
+            `${startBackendSchemaMock} || true`,
+            "sleep 1",
             "cd hasura",
             "docker compose up -d postgres",
             hasuraAppServices.length ? `docker compose up -d --no-deps ${hasuraAppServices.join(" ")}` : ":",
