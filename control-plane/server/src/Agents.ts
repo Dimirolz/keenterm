@@ -19,6 +19,17 @@ export interface AgentInfo {
 
 const NO_STACK: StackStatus = { pg: false, redis: false, hasura: false }
 
+const diffCommand = `
+{
+  git diff --no-ext-diff --find-renames HEAD --
+  git ls-files --others --exclude-standard -z | while IFS= read -r -d '' file; do
+    git diff --no-ext-diff --no-index -- /dev/null "$file"
+    code=$?
+    test "$code" -eq 0 -o "$code" -eq 1
+  done
+}
+`
+
 /** Agent lifecycle. State is always derived live from orbctl + docker + pty sessions. */
 export class Agents extends Effect.Service<Agents>()("Agents", {
   dependencies: [Machines.Default, VmStack.Default],
@@ -110,7 +121,7 @@ export class Agents extends Effect.Service<Agents>()("Agents", {
 
       diff: (n: number) =>
         requireAgent(n).pipe(
-          Effect.zipRight(machines.runInRepo(machineFor(n), "git diff --no-ext-diff --find-renames HEAD --")),
+          Effect.zipRight(machines.runInRepo(machineFor(n), diffCommand)),
         ),
     }
   }),
