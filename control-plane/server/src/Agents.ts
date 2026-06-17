@@ -62,7 +62,7 @@ export class Agents extends Effect.Service<Agents>()("Agents", {
     return {
       list,
 
-      /** Clone base -> next free number, start it, bring up VM-local compose deps. */
+      /** Clone base -> next free number, start it, then bring up VM-local compose deps in the background. */
       create: Effect.gen(function* () {
         const agents = yield* list
         const used = new Set(agents.map((a) => a.n))
@@ -71,7 +71,14 @@ export class Agents extends Effect.Service<Agents>()("Agents", {
         const machine = machineFor(n)
         yield* machines.clone(BASE_MACHINE, machine)
         yield* machines.start(machine)
-        yield* stack.up(n)
+        yield* stack
+          .up(n)
+          .pipe(
+            Effect.catchAll((e) =>
+              Effect.sync(() => console.error(`[stack:${machine}] background startup failed`, e)),
+            ),
+            Effect.forkDaemon,
+          )
         return { n, name: machine }
       }),
 
