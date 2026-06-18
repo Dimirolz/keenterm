@@ -22,12 +22,15 @@ const detect = (out: string): StackStatus => {
 }
 
 const startBackendSchemaMock = [
+  "if test -f /tmp/orb-backend-schema-mock.pid; then kill $(cat /tmp/orb-backend-schema-mock.pid) >/dev/null 2>&1 || true; rm -f /tmp/orb-backend-schema-mock.pid; fi",
   "test -f apps/backend/src/@modules/graphql/schema.gql",
   `(
     pnpm --filter @shilo/graphql-api exec tsx -e '
       import http from "node:http";
       import { readFileSync } from "node:fs";
       import { buildSchema, graphql } from "graphql";
+
+      process.title = "orb-backend-schema-mock";
 
       const schema = buildSchema(readFileSync("../../apps/backend/src/@modules/graphql/schema.gql", "utf8"));
       const server = http.createServer(async (req, res) => {
@@ -48,14 +51,43 @@ const startBackendSchemaMock = [
 
         res.setHeader("content-type", "application/json");
         res.end(JSON.stringify(result));
-        setTimeout(() => server.close(() => process.exit(0)), 250);
       });
 
-      server.listen(8010, "0.0.0.0");
+      server.listen(8010, "0.0.0.0", () => console.log("mock backend schema on :8010"));
       setTimeout(() => process.exit(2), 120000);
     ' >/tmp/orb-backend-schema-mock.log 2>&1 &
     echo $! >/tmp/orb-backend-schema-mock.pid
   )`,
+  `ready=0
+  for i in $(seq 1 60); do
+    if curl -fsS http://localhost:8010/graphql >/dev/null; then
+      ready=1
+      break
+    fi
+    sleep 0.25
+  done
+  test "$ready" = 1`,
+].join(" && ")
+
+const stopBackendSchemaMock =
+  "if test -f /tmp/orb-backend-schema-mock.pid; then kill $(cat /tmp/orb-backend-schema-mock.pid) >/dev/null 2>&1 || true; rm -f /tmp/orb-backend-schema-mock.pid; fi"
+
+const waitHasuraConsistent = [
+  `ready=0
+  for i in $(seq 1 120); do
+    if curl -fsS \
+      -H "x-hasura-admin-secret: hasura_graphql_admin_secret" \
+      -H "content-type: application/json" \
+      http://localhost:8080/v1/metadata \
+      -d '{"type":"get_inconsistent_metadata","args":{}}' \
+      | grep -q '"is_consistent":true'; then
+      ready=1
+      break
+    fi
+    sleep 0.5
+  done
+  test "$ready" = 1`,
+  stopBackendSchemaMock,
 ].join(" && ")
 
 export class VmStack extends Effect.Service<VmStack>()("VmStack", {
@@ -75,11 +107,11 @@ export class VmStack extends Effect.Service<VmStack>()("VmStack", {
           const hasuraAppServices = HASURA_SERVICES.filter((s) => s !== "postgres")
           return [
             `${startBackendSchemaMock} || true`,
-            "sleep 1",
             "cd hasura",
             "docker compose up -d postgres",
             hasuraAppServices.length ? `docker compose up -d --no-deps ${hasuraAppServices.join(" ")}` : ":",
-            "docker update --memory 512m --memory-swap 512m shilo-graphql-engine-1 >/dev/null 2>&1 || true",
+            "docker update --memory 712m --memory-swap 712m shilo-graphql-engine-1 >/dev/null 2>&1 || true",
+            waitHasuraConsistent,
             `cd ../apps/backend && docker compose up -d ${BACKEND_DEP_SERVICES.join(" ")}`,
           ].join(" && ")
         })(),
