@@ -102,7 +102,7 @@ export default function App() {
         <header>
           <span className="brand">
             <span className="wordmark">
-              keen<span className="dot" />fleet
+              keen<span className="dot" />term
             </span>
           </span>
           <button
