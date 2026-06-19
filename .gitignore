@@ -1,1 +1,11 @@
 node_modules/
+
+# Build outputs
+dist/
+.build/
+.swiftpm/
+DerivedData/
+
+# Local noise
+.DS_Store
+*.log
