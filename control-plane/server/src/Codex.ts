@@ -1,4 +1,4 @@
-// Persistent per-machine Codex pty sessions, ported from exp0.
+// Persistent per-machine Codex pty sessions.
 //
 // Deliberately imperative: interactive stdio passthrough is a separate concern
 // from the RPC lifecycle (HANDOFF-3). Sessions survive websocket disconnects;

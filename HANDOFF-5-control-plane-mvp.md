@@ -2,7 +2,7 @@
 
 Continues from `HANDOFF-3-control-plane.md` (direction) and
 `HANDOFF-4-vertical-slice.md` (validated shell steps). Experiments are DONE;
-this is the build phase: **Effect TS backend + React UI**, replacing `oa`/exp0.
+this is the build phase: **Effect TS backend + React UI**, replacing `oa`.
 
 ## Decisions locked in this session
 
@@ -10,7 +10,7 @@ this is the build phase: **Effect TS backend + React UI**, replacing `oa`/exp0.
 package manager   pnpm (workspace: control-plane/{server,web}); NOT bun
 state             derived live from orbctl + pty sessions; nothing persisted
 runtime           node 22 (host Mac), tsx for dev
-terminal          "simple xterm solution like exp0": server-owned pty per
+terminal          server-owned pty per
                   machine, buffered+replayed over websocket; codex included
                   in the first slice
 ws transport      Effect-idiomatic: HttpServerRequest.upgrade + Socket.
@@ -34,7 +34,7 @@ control-plane/
     src/Machines.ts       Machines service: typed orbctl/orb wrapper via
                           Command/CommandExecutor; CommandFailed domain error
                           (PlatformError -> defect); list parses `orbctl list -f json`
-    src/Codex.ts          imperative pty session manager (port of exp0):
+    src/Codex.ts          imperative pty session manager:
                           Map<machine, Session>, 8MB replay buffer, OSC-title
                           braille-spinner "working" detection, transport-agnostic
                           TermClient interface { send, close }
@@ -99,11 +99,11 @@ log:       /tmp/orb-cp.log
 
 ## Next steps (in order)
 
-1. **web/src/App.tsx + css** — port exp0 UI to React: sidebar with agent rows
+1. **web/src/App.tsx + css** — build the React operator UI: sidebar with agent rows
    (state dot, codex badge idle/work-pulse), poll `/api/agents` every 2s,
    actions new/start/stop/rm/doctor (doctor output in an overlay <pre>),
    main pane = CodexTerminal for the selected running agent, notice+start
-   button for stopped ones. exp0 reference: `exp0/public/index.html`.
+   button for stopped ones.
    Consider removing React.StrictMode (double ws connect in dev is noisy).
 2. Verify in browser: pnpm dev:server + pnpm dev:web, create/select agent,
    codex terminal interactive, scrollback survives tab switch (server replay).

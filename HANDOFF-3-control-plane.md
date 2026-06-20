@@ -4,12 +4,12 @@ Continues from `HANDOFF.md` and `HANDOFF-2-hasura.md`.
 
 ## Direction
 
-Move from `exp0` shell tooling toward a real control plane:
+Move from shell tooling toward a real control plane:
 
 ```text
 Effect TS backend  -> owns agent lifecycle
 React TS frontend  -> operator UI
-oa CLI             -> discarded after exp0; not carried forward
+oa CLI             -> discarded; not carried forward
 ```
 
 Key decision: do **not** rewrite `oa` or keep it as a shim. `oa` proved the
@@ -74,7 +74,7 @@ React frontend:
 4. Add job runner + log streaming for provisioning.
 5. Build React dashboard on top.
 6. Add Hasura lifecycle from `HANDOFF-2-hasura.md`.
-7. Delete/archive `oa` after the service covers the exp0 workflows.
+7. Delete/archive `oa` after the service covers the proven workflows.
 
 ## Open questions
 
