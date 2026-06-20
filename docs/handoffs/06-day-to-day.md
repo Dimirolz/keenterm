@@ -171,8 +171,7 @@ Create стал ~2s (backend boot из create убран — см. поправ�
 refresh pg golden:  stop main -> reflink свежий /golden -> start main
                     (секунды даунтайма main)
 refresh base VM:    git pull + install/build в shilo-agent-base
-                    (поведение было в oa как RepoService — oa/ ещё в репе
-                    как референс)
+                    (legacy shell workflow becomes RepoService)
 ```
 
 ### 5. Quality-of-life (полировка)

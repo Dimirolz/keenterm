@@ -238,9 +238,9 @@ services:
 ```text
 HasuraService.up(n)   = reflink golden->agent_n + run orb-pg-n + orb-redis-n + orb-hasura-n
 HasuraService.down(n) = docker rm -f orb-pg-n orb-redis-n orb-hasura-n + rm CoW data dir
-MachineService        = orbctl clone/start/stop (already proven in oa)
+MachineService        = orbctl clone/start/stop (already proven)
 AgentService.create   = clone VM + write per-agent .env + HasuraService.up
-RepoService           = base build/update (already in oa)
+RepoService           = base build/update (already proven)
 ```
 
 Golden lifecycle (refresh periodically from `shilo-postgres-1`) is its own

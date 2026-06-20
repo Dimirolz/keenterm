@@ -2,7 +2,7 @@
 
 Continues from `docs/handoffs/03-control-plane.md` (direction) and
 `docs/handoffs/04-vertical-slice.md` (validated shell steps). Experiments are DONE;
-this is the build phase: **Effect TS backend + React UI**, replacing `oa`.
+this is the build phase: **Effect TS backend + React UI**, replacing legacy shell tooling.
 
 ## Decisions locked in this session
 

@@ -9,10 +9,10 @@ Move from shell tooling toward a real control plane:
 ```text
 Effect TS backend  -> owns agent lifecycle
 React TS frontend  -> operator UI
-oa CLI             -> discarded; not carried forward
+legacy shell CLI   -> discarded; not carried forward
 ```
 
-Key decision: do **not** rewrite `oa` or keep it as a shim. `oa` proved the
+Key decision: do **not** rewrite the shell CLI or keep it as a shim. It proved the
 workflow and commands, but after the experiment it is no longer needed. The
 next stage should be a service because the future consumer is the
 backend/control plane, not a human CLI.
@@ -63,18 +63,18 @@ React frontend:
   `MachineNotFound`, `InvalidAgentNumber`, `CommandFailed`, `UserAborted`.
 - Interactive operations (`shell`, `codex`) stay separate from normal RPC
   workflows because they need stdio/session passthrough.
-- Drop `oa` entirely once its proven behavior has been ported into the
+- Drop legacy shell tooling once its proven behavior has been ported into the
   backend services.
 
 ## Suggested sequence
 
 1. Define the `Agent` model and persisted state.
-2. Build Effect backend by porting the proven `oa` behavior.
+2. Build Effect backend by porting the proven shell behavior.
 3. Add minimal HTTP API for list/create/delete/start/stop.
 4. Add job runner + log streaming for provisioning.
 5. Build React dashboard on top.
 6. Add Hasura lifecycle from `docs/handoffs/02-hasura.md`.
-7. Delete/archive `oa` after the service covers the proven workflows.
+7. Delete/archive legacy shell tooling after the service covers the proven workflows.
 
 ## Open questions
 

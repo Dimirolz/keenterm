@@ -34,7 +34,7 @@ Why per-agent docker (not docker-in-VM):
   parallel agents.
 
 Tradeoff accepted: hasura **and** the agent's Postgres live on the **host**,
-not in the VM. So the agent lifecycle (`oa new` / `oa rm`) must also
+not in the VM. So the agent lifecycle must also
 create/remove the host containers (pg + hasura) and the CoW data dir. That
 coupling is the price for the RAM/clone savings + real data isolation.
 
@@ -209,7 +209,7 @@ one pg process per agent, which we accept.
 
 ### Option 3 (CHOSEN) — btrfs copy-on-write golden (isolated, real data, ~0 disk)
 
-See the full description below. This is the path `oa`/the control plane will
+See the full description below. This is the path the control plane will
 implement for every agent.
 
 ### Option 1 (rejected) — shared data, cloned metadata only (lightest)
@@ -267,18 +267,18 @@ data dir safely). This is the only option that gives real data + full
 mutation isolation + ~0 disk, and it mirrors the project's design (VM is
 CoW-cloned by OrbStack; the DB is CoW-cloned by btrfs).
 
-## What still needs adding to the base / oa
+## What still needs adding to the base / control plane
 
 1. **Golden cluster management** — maintain one stopped/quiesced golden
    Postgres data dir (snapshot of main dev data, refreshed periodically). This
    is the source for every agent's CoW clone.
-2. **`oa hasura up <n>` / `oa hasura down <n>`** — on startup:
+2. **Hasura up/down per agent** — on startup:
    `cp --reflink=always` (or btrfs subvolume snapshot) the golden data dir to
    `agent_N`'s data dir, `docker run` a per-agent Postgres on it
    (`orb-pg-N :154NN`), then `docker run` the capped graphql-engine
    (`orb-hasura-N :180NN`) pointed at that pg with the per-agent env. On
    teardown: `docker rm -f` both containers and delete the CoW data dir.
-3. Wire `oa new` / `oa rm` to call the above so an agent gets its own pg +
+3. Wire agent create/remove to call the above so an agent gets its own pg +
    hasura automatically and cleans them up.
 4. Confirm the host port scheme — hasura `:18081/2/3...`, pg `:15441/2/3...`
    (one of each per agent).
