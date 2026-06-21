@@ -5,7 +5,9 @@
   "scripts": {
     "dev": "pnpm dev:server & pnpm dev:web & wait",
     "dev:server": "pnpm --filter server dev",
-    "dev:web": "pnpm --filter web dev"
+    "dev:web": "pnpm --filter web dev",
+    "sidequest": "scripts/keenterm-sidequest",
+    "mcp": "node scripts/keenterm-mcp.mjs"
   },
   "dependencies": {
     "@xterm/xterm": "^6.0.0"

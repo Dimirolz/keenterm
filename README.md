@@ -5,7 +5,9 @@ Local agent fleet control plane and experiments.
 ## Tree
 
 ```text
-control-plane/   Effect TS backend + React operator UI
+server/          Effect TS backend
+web/             React operator UI
+scripts/         keenterm CLI/MCP helpers
 docs/            current state, decisions, product direction, research notes
 experiments/     isolated spikes and prototypes
 ```

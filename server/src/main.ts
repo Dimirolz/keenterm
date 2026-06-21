@@ -30,6 +30,7 @@ const errorResponses = {
 
 const ok = <A>(body: A) => HttpServerResponse.json(body).pipe(Effect.orDie)
 const MAX_UPLOAD_BYTES = 10 * 1024 * 1024
+const MAX_SIDEQUEST_PROMPT_BYTES = 64 * 1024
 
 // ---- routes -------------------------------------------------------------------
 
@@ -46,6 +47,36 @@ const router = HttpRouter.empty.pipe(
     Effect.gen(function* () {
       const agents = yield* Agents
       return yield* ok(yield* agents.create)
+    }),
+  ),
+  HttpRouter.post(
+    "/api/sidequests",
+    Effect.gen(function* () {
+      const agents = yield* Agents
+      const request = yield* HttpServerRequest.HttpServerRequest
+      const bytes = yield* request.arrayBuffer.pipe(Effect.orDie)
+      if (bytes.byteLength > MAX_SIDEQUEST_PROMPT_BYTES) {
+        return yield* HttpServerResponse.json({ error: "sidequest prompt too large" }, { status: 413 }).pipe(
+          Effect.orDie,
+        )
+      }
+      let body: unknown
+      try {
+        body = JSON.parse(Buffer.from(bytes).toString("utf8"))
+      } catch {
+        return yield* HttpServerResponse.json({ error: "expected JSON body" }, { status: 400 }).pipe(Effect.orDie)
+      }
+      const prompt = typeof body === "object" && body && "prompt" in body ? body.prompt : undefined
+      if (typeof prompt !== "string" || !prompt.trim()) {
+        return yield* HttpServerResponse.json({ error: "expected non-empty prompt" }, { status: 400 }).pipe(
+          Effect.orDie,
+        )
+      }
+      const agent = yield* agents.createSidequest(prompt)
+      return yield* ok({
+        ...agent,
+        url: `http://localhost:5173/?machine=${encodeURIComponent(agent.name)}`,
+      })
     }),
   ),
   HttpRouter.del(

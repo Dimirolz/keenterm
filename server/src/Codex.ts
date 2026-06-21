@@ -23,6 +23,9 @@ interface Session {
   term: pty.IPty
   buffer: string
   clients: Set<TermClient>
+  ready: boolean
+  readyTimer: ReturnType<typeof setTimeout> | undefined
+  readyWaiters: Array<() => void>
   carry: string
   probeCarry: string
   working: boolean
@@ -87,6 +90,26 @@ function broadcastStatus(s: Session) {
   for (const client of s.clients) client.send(msg)
 }
 
+function isReady(s: Session) {
+  const tail = stripTerminalQueries(s.buffer.slice(-4096))
+  return tail.includes("Tip:") && !tail.includes("Booting MCP server")
+}
+
+function resolveReady(s: Session) {
+  s.ready = true
+  const waiters = s.readyWaiters.splice(0)
+  for (const resolve of waiters) resolve()
+}
+
+function scheduleReadyCheck(s: Session) {
+  if (s.ready) return
+  if (s.readyTimer) clearTimeout(s.readyTimer)
+  s.readyTimer = setTimeout(() => {
+    s.readyTimer = undefined
+    if (isReady(s)) resolveReady(s)
+  }, 250)
+}
+
 function getSession(machine: string): Session {
   let s = sessions.get(machine)
   if (s) return s
@@ -108,13 +131,25 @@ function getSession(machine: string): Session {
     env: { ...process.env, TERM: "xterm-256color" } as Record<string, string>,
   })
 
-  const session: Session = { term, buffer: "", clients: new Set(), carry: "", probeCarry: "", working: false, title: "" }
+  const session: Session = {
+    term,
+    buffer: "",
+    clients: new Set(),
+    ready: false,
+    readyTimer: undefined,
+    readyWaiters: [],
+    carry: "",
+    probeCarry: "",
+    working: false,
+    title: "",
+  }
 
   term.onData((data) => {
     answerKeyboardProbe(session, data)
     session.buffer += data
     if (session.buffer.length > BUFFER_CAP) session.buffer = session.buffer.slice(-BUFFER_CAP)
     detectStatus(session, data)
+    scheduleReadyCheck(session)
     // terminal output as binary; control/status frames are sent as text JSON
     const bin = Buffer.from(data, "utf8")
     for (const client of session.clients) client.send(bin)
@@ -142,6 +177,32 @@ export function killSession(machine: string): boolean {
 export function sessionStatus(machine: string): { codex: boolean; working: boolean } {
   const s = sessions.get(machine)
   return { codex: !!s, working: s?.working ?? false }
+}
+
+function waitForReady(s: Session) {
+  if (s.ready || isReady(s)) {
+    s.ready = true
+    return Promise.resolve()
+  }
+  return new Promise<void>((resolve) => {
+    const timeout = setTimeout(resolve, 10000)
+    s.readyWaiters.push(() => {
+      clearTimeout(timeout)
+      resolve()
+    })
+  })
+}
+
+export async function submitPrompt(machine: string, prompt: string) {
+  const s = getSession(machine)
+  await waitForReady(s)
+  const lines = prompt.replace(/\r\n/g, "\n").split("\n")
+  for (const [i, line] of lines.entries()) {
+    if (line) s.term.write(line)
+    if (i !== lines.length - 1) s.term.write("\x1b[13;2u")
+  }
+  await new Promise((resolve) => setTimeout(resolve, 50))
+  s.term.write("\r")
 }
 
 /** Attach a client to the (possibly new) session. Returns transport callbacks. */

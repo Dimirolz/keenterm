@@ -1,0 +1,39 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+host="${KEENTERM_HOST:-http://host.orb.internal:7070}"
+
+if [ "$#" -gt 0 ]; then
+  prompt="$*"
+else
+  prompt="$(cat)"
+fi
+
+if [ -z "${prompt//[[:space:]]/}" ]; then
+  echo "usage: keenterm-sidequest <prompt>" >&2
+  echo "or:    printf 'prompt' | keenterm-sidequest" >&2
+  exit 2
+fi
+
+body="$(PROMPT="$prompt" python3 - <<'PY'
+import json
+import os
+print(json.dumps({"prompt": os.environ["PROMPT"]}))
+PY
+)"
+
+response="$(curl -fsS \
+  -H 'content-type: application/json' \
+  -X POST \
+  --data "$body" \
+  "$host/api/sidequests")"
+
+RESPONSE="$response" python3 - <<'PY'
+import json
+import os
+
+data = json.loads(os.environ["RESPONSE"])
+print(f"Spawned sidequest agent: {data['name']}")
+print(f"Host UI URL for the human operator: {data['url']}")
+print("Do not curl this URL from inside the VM; localhost there is not the host browser.")
+PY

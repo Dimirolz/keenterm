@@ -102,28 +102,37 @@ export class Agents extends Effect.Service<Agents>()("Agents", {
         }),
       )
 
+    const create = Effect.gen(function* () {
+      const agents = yield* list
+      const used = new Set(agents.map((a) => a.n))
+      let n = 1
+      while (used.has(n)) n++
+      const machine = machineFor(n)
+      yield* machines.clone(BASE_MACHINE, machine)
+      yield* machines.start(machine)
+      yield* stack
+        .up(n)
+        .pipe(
+          Effect.catchAll((e) =>
+            Effect.sync(() => console.error(`[stack:${machine}] background startup failed`, e)),
+          ),
+          Effect.forkDaemon,
+        )
+      return { n, name: machine }
+    })
+
     return {
       list,
 
       /** Clone base -> next free number, start it, then bring up VM-local compose deps in the background. */
-      create: Effect.gen(function* () {
-        const agents = yield* list
-        const used = new Set(agents.map((a) => a.n))
-        let n = 1
-        while (used.has(n)) n++
-        const machine = machineFor(n)
-        yield* machines.clone(BASE_MACHINE, machine)
-        yield* machines.start(machine)
-        yield* stack
-          .up(n)
-          .pipe(
-            Effect.catchAll((e) =>
-              Effect.sync(() => console.error(`[stack:${machine}] background startup failed`, e)),
-            ),
-            Effect.forkDaemon,
-          )
-        return { n, name: machine }
-      }),
+      create,
+
+      createSidequest: (prompt: string) =>
+        Effect.gen(function* () {
+          const agent = yield* create
+          yield* Effect.promise(() => Codex.submitPrompt(agent.name, prompt))
+          return agent
+        }),
 
       /** Start the whole agent: VM + VM-local compose deps. */
       start: (n: number) =>

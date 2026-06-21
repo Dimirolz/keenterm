@@ -48,6 +48,13 @@ export default function App() {
   })
   const agents = agentsQuery.data
 
+  useEffect(() => {
+    if (selected !== null) return
+    const machine = new URLSearchParams(window.location.search).get('machine')
+    const agent = machine ? agents.find((a) => a.name === machine) : undefined
+    if (agent) setSelected(agent.n)
+  }, [agents, selected])
+
   const diffStatus = useQuery({
     queryKey: ['diff-status', diff?.n],
     queryFn: () => api.diffStatus(diff!.n),

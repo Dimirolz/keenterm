@@ -2,8 +2,8 @@
 
 ## What Works
 
-- `control-plane/server`: Effect TS HTTP server on `:7070`.
-- `control-plane/web`: React/Vite operator UI.
+- `server`: Effect TS HTTP server on `:7070`.
+- `web`: React/Vite operator UI.
 - Agents are OrbStack VMs named `shilo-agent-N`, cloned from `shilo-agent-base`.
 - The web UI can create, start, stop, delete, select agents, open Codex TUI, and view diffs.
 - Codex sessions are server-owned PTYs with buffered replay after websocket reconnect.
@@ -52,22 +52,29 @@ POST   /api/agents/:n/stop
 POST   /api/agents/:n/stack/up
 GET    /api/agents/:n/diff/status
 GET    /api/agents/:n/diff
+POST   /api/sidequests
 GET    /term?machine=shilo-agent-N
 ```
 
 ## Run
 
 ```sh
-pnpm --dir control-plane install
-pnpm --dir control-plane --filter server check
-pnpm --dir control-plane dev:server
-pnpm --dir control-plane dev:web
+pnpm install
+pnpm --filter server check
+bun dev
 ```
 
 Dev ports:
 
 - server: `7070`
 - web: `5173`
+
+Sidequest helpers:
+
+```sh
+KEENTERM_HOST=http://host.orb.internal:7070 scripts/keenterm-sidequest "prompt"
+node scripts/keenterm-mcp.mjs
+```
 
 ## Known Gotchas
 
