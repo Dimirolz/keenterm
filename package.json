@@ -3,6 +3,7 @@
   "version": "0.0.0",
   "private": true,
   "scripts": {
+    "dev": "pnpm dev:server & pnpm dev:web & wait",
     "dev:server": "pnpm --filter server dev",
     "dev:web": "pnpm --filter web dev"
   },
