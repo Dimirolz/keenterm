@@ -17,6 +17,10 @@ export interface DiffStatus {
   version: string
 }
 
+export interface AppConfig {
+  repoDir: string
+}
+
 export const stackUp = (s: StackStatus) => s.pg && s.redis && s.hasura
 export const stackPartial = (s: StackStatus) => (s.pg || s.redis || s.hasura) && !stackUp(s)
 
@@ -28,6 +32,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 }
 
 export const api = {
+  config: () => request<AppConfig>('/api/config'),
   list: () => request<AgentInfo[]>('/api/agents'),
   create: () => request<{ n: number; name: string }>('/api/agents', { method: 'POST' }),
   remove: (n: number) => request<unknown>(`/api/agents/${n}`, { method: 'DELETE' }),

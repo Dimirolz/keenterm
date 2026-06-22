@@ -11,7 +11,7 @@ import { Effect, Layer, Runtime } from "effect"
 import { createServer } from "node:http"
 import { Agents } from "./Agents.js"
 import * as Codex from "./Codex.js"
-import { MACHINE_RE, PORT } from "./config.js"
+import { MACHINE_RE, PORT, VSCODE_REPO_DIR } from "./config.js"
 
 // ---- helpers ------------------------------------------------------------------
 
@@ -35,6 +35,12 @@ const MAX_SIDEQUEST_PROMPT_BYTES = 64 * 1024
 // ---- routes -------------------------------------------------------------------
 
 const router = HttpRouter.empty.pipe(
+  HttpRouter.get(
+    "/api/config",
+    Effect.gen(function* () {
+      return yield* ok({ repoDir: VSCODE_REPO_DIR })
+    }),
+  ),
   HttpRouter.get(
     "/api/agents",
     Effect.gen(function* () {

@@ -10,11 +10,10 @@ type AgentAction = 'start' | 'stop' | 'stack-up' | 'diff' | 'delete'
 type OpenDiff = { n: number; name: string; patch: string; version: string }
 type AgentLabels = Record<string, string>
 
-const REPO_DIR = '/home/dmitrijilin/projects/shilo-ai-mono'
 const LABELS_KEY = 'keenterm.agentLabels'
 
-const vscodeSshUrl = (machine: string) =>
-  `vscode://vscode-remote/ssh-remote+${encodeURIComponent(`${machine}@orb`)}${REPO_DIR}`
+const vscodeSshUrl = (machine: string, repoDir: string) =>
+  `vscode://vscode-remote/ssh-remote+${encodeURIComponent(`${machine}@orb`)}${repoDir}`
 
 const DiffViewer = lazy(() => import('./DiffViewer').then((m) => ({ default: m.DiffViewer })))
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms))
@@ -47,6 +46,12 @@ export default function App() {
     refetchInterval: 2000,
   })
   const agents = agentsQuery.data
+
+  const configQuery = useQuery({
+    queryKey: ['config'],
+    queryFn: api.config,
+    staleTime: Infinity,
+  })
 
   useEffect(() => {
     if (selected !== null) return
@@ -252,6 +257,7 @@ export default function App() {
                 selected={a.n === selected}
                 busy={busy}
                 labels={labels}
+                repoDir={configQuery.data?.repoDir ?? ''}
                 onSelect={() => selectAgent(a.n)}
                 renaming={renaming === a.n}
                 onRenameStart={() => setRenaming(a.n)}
@@ -358,6 +364,7 @@ function AgentRow({
   selected,
   busy,
   labels,
+  repoDir,
   renaming,
   onSelect,
   onRenameStart,
@@ -369,6 +376,7 @@ function AgentRow({
   selected: boolean
   busy: string | null
   labels: AgentLabels
+  repoDir: string
   renaming: boolean
   onSelect: () => void
   onRenameStart: () => void
@@ -384,7 +392,7 @@ function AgentRow({
   }
   const openCode = (e: React.MouseEvent) => {
     e.stopPropagation()
-    window.location.href = vscodeSshUrl(a.name)
+    if (repoDir) window.location.href = vscodeSshUrl(a.name, repoDir)
   }
   const pending = (action: string) => busy === `${action}-${a.n}`
   const rowBusy = busy?.endsWith(`-${a.n}`) ?? false
@@ -442,7 +450,7 @@ function AgentRow({
           </button>
         )}
         {running && (
-          <button className="icon-btn" onClick={openCode} title={`Open ${a.name} in VS Code`}>
+          <button className="icon-btn" disabled={!repoDir} onClick={openCode} title={`Open ${a.name} in VS Code`}>
             <Code2 aria-hidden="true" />
             <span className="sr-only">Open in VS Code</span>
           </button>
